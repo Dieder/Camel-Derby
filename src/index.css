@@ -35,3 +35,23 @@
   background: rgba(245, 158, 11, 0.35);
   border-radius: 9999px;
 }
+
+@keyframes dice-tumble {
+  0% {
+    transform: perspective(360px) rotateX(0deg) rotateY(0deg) scale(0.84);
+  }
+  35% {
+    transform: perspective(360px) rotateX(195deg) rotateY(-120deg) scale(1.14) translateY(-6px);
+  }
+  70% {
+    transform: perspective(360px) rotateX(330deg) rotateY(20deg) scale(1.04) translateY(-2px);
+  }
+  100% {
+    transform: perspective(360px) rotateX(360deg) rotateY(0deg) scale(1) translateY(0px);
+  }
+}
+
+.animate-dice-tumble {
+  animation: dice-tumble 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+

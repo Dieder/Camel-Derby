@@ -107,7 +107,8 @@ export function createTileTopTexture(
   biome: TileBiome,
   spaceType: TileSpaceType,
   maxAnisotropy: number,
-  obstacleProp?: 'bandit' | 'blow_machine'
+  obstacleProp?: 'bandit' | 'blow_machine',
+  isFinalSprint = false
 ): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -133,9 +134,9 @@ export function createTileTopTexture(
         }
       }
     }
-    ctx.fillStyle = 'rgba(22, 163, 74, 0.92)';
+    ctx.fillStyle = 'rgba(22, 163, 74, 0.94)';
     ctx.beginPath();
-    ctx.arc(128, 128, 72, 0, Math.PI * 2);
+    ctx.arc(128, 128, 74, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#FDE047';
     ctx.lineWidth = 10;
@@ -153,12 +154,22 @@ export function createTileTopTexture(
     return tex;
   }
 
-  // Stylized cartoon border ring
-  ctx.strokeStyle = pal.rim;
-  ctx.lineWidth = 16;
+  // Stylized cartoon border ring (gold/crimson accent in Final Sprint Zone)
+  ctx.strokeStyle = isFinalSprint ? '#EA580C' : pal.rim;
+  ctx.lineWidth = isFinalSprint ? 18 : 16;
   ctx.beginPath();
   ctx.arc(128, 128, 104, 0, Math.PI * 2);
   ctx.stroke();
+
+  if (isFinalSprint) {
+    ctx.strokeStyle = '#FEF08A';
+    ctx.lineWidth = 5;
+    ctx.setLineDash([14, 10]);
+    ctx.beginPath();
+    ctx.arc(128, 128, 92, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // Biome subtle motif
   ctx.save();
@@ -178,9 +189,29 @@ export function createTileTopTexture(
   }
   ctx.restore();
 
-  // Special Space Type highlight (Obstacle vs Power-Up vs Start)
-  if (spaceType === 'obstacle') {
-    // Bold hazard stripes ring
+  // Special Space Type highlight (Checkpoint vs Obstacle vs Power-Up vs Start)
+  if (spaceType === 'checkpoint') {
+    ctx.fillStyle = '#1E3A8A';
+    ctx.beginPath();
+    ctx.arc(128, 128, 82, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#FACC15';
+    ctx.lineWidth = 9;
+    ctx.stroke();
+
+    ctx.fillStyle = '#FEF08A';
+    ctx.font = '800 54px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(index), 128, 102);
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '800 19px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('CHECKPOINT', 128, 152);
+    ctx.fillStyle = '#93C5FD';
+    ctx.font = '700 15px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('SAFE ZONE', 128, 176);
+  } else if (spaceType === 'obstacle') {
     ctx.fillStyle = '#B91C1C';
     ctx.beginPath();
     ctx.arc(128, 128, 82, 0, Math.PI * 2);
@@ -206,7 +237,7 @@ export function createTileTopTexture(
     );
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '700 17px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText('OBSTACLE', 128, 178);
+    ctx.fillText(isFinalSprint ? 'SPRINT HAZARD' : 'OBSTACLE', 128, 178);
   } else if (spaceType === 'powerup') {
     ctx.fillStyle = '#0F766E';
     ctx.beginPath();
@@ -227,7 +258,7 @@ export function createTileTopTexture(
     ctx.fillText('★ POWER UP', 128, 154);
     ctx.fillStyle = '#CCFBF1';
     ctx.font = '700 16px "Plus Jakarta Sans", sans-serif';
-    ctx.fillText('DRAW TOKEN', 128, 178);
+    ctx.fillText(isFinalSprint ? 'FINAL BOOST' : 'DRAW CARD', 128, 178);
   } else if (spaceType === 'start') {
     ctx.fillStyle = '#15803D';
     ctx.beginPath();
@@ -243,11 +274,16 @@ export function createTileTopTexture(
     ctx.textBaseline = 'middle';
     ctx.fillText('START', 128, 128);
   } else {
-    ctx.fillStyle = '#451A03';
+    ctx.fillStyle = isFinalSprint ? '#7C2D12' : '#451A03';
     ctx.font = '800 56px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(index), 128, 128);
+    ctx.fillText(String(index), 128, isFinalSprint ? 114 : 128);
+    if (isFinalSprint) {
+      ctx.fillStyle = '#EA580C';
+      ctx.font = '800 16px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText('FINAL SPRINT', 128, 164);
+    }
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -255,3 +291,4 @@ export function createTileTopTexture(
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
+

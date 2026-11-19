@@ -14,7 +14,13 @@ export type TileBiome =
   | 'ruins'
   | 'finish';
 
-export type TileSpaceType = 'start' | 'standard' | 'obstacle' | 'powerup' | 'finish';
+export type TileSpaceType =
+  | 'start'
+  | 'standard'
+  | 'obstacle'
+  | 'powerup'
+  | 'checkpoint'
+  | 'finish';
 
 export interface BoardTile {
   index: number;
@@ -24,16 +30,17 @@ export interface BoardTile {
   x: number;
   z: number;
   yaw: number;
-  sandTrapOwnerId: string | null;
+  sandTrapOwnerId: string | null; // Also used for Sand Wall / Quicksand hazards
+  hazardKind?: 'sand_wall' | 'quicksand' | null;
 }
 
 export type PowerUpType =
   | 'speed_boost'
+  | 'turbo_sprint'
   | 'shield'
-  | 'sand_trap'
-  | 'blockade'
-  | 'sprint_potion'
-  | 'oasis_refresh';
+  | 'sand_wall'
+  | 'block'
+  | 'swap';
 
 export type ActionDieFace =
   | 'none'
@@ -46,14 +53,17 @@ export type ActionDieFace =
 export type ObstacleOutcome =
   | 'back_2'
   | 'back_3'
-  | 'lose_turn'
-  | 'back_start';
+  | 'lose_1'
+  | 'lose_2'
+  | 'back_checkpoint'
+  | 'sandstorm_all';
 
 export type DesertEventType =
   | 'sandstorm'
   | 'tailwind'
-  | 'mirage'
-  | 'water_stop';
+  | 'camel_stampede'
+  | 'oasis_festival'
+  | 'quicksand';
 
 export type TimeOfDay = 'day' | 'sunset' | 'night';
 
@@ -73,10 +83,12 @@ export interface PlayerState {
   color: CamelColor;
   isAI: boolean;
   position: number;
+  checkpoint: number;
   stackOrder: number;
+  stamina: number;
+  staminaMoveBoostQueued: boolean;
   powerUps: PowerUpType[];
   hasShield: boolean;
-  mirageShield: boolean;
   sprintActive: boolean;
   speedBoostQueued: boolean;
   stunnedTurns: number;
@@ -88,13 +100,11 @@ export interface PlayerState {
 export type TurnPhase =
   | 'lobby'
   | 'awaiting_roll'
-  | 'rolling_dice'
   | 'animating_move'
   | 'pass_choice'
   | 'kick_choice'
-  | 'sand_trap_target'
-  | 'blockade_target'
-  | 'speed_boost_choice'
+  | 'sand_wall_target'
+  | 'block_target'
   | 'obstacle_modal'
   | 'event_banner'
   | 'race_over'
@@ -107,6 +117,8 @@ export interface TurnRollSummary {
   totalSteps: number;
   sprintUsed: boolean;
   speedBoostUsed: boolean;
+  staminaBoostUsed: boolean;
+  rollNonce: number;
 }
 
 export interface PendingPassChoice {
@@ -126,7 +138,7 @@ export interface PendingObstacleResult {
   playerId: string;
   roll: number;
   outcome: ObstacleOutcome;
-  blockedBy: 'shield' | 'mirage' | null;
+  inFinalSprint: boolean;
   source: 'action_die' | 'obstacle_tile';
 }
 
@@ -157,7 +169,6 @@ export interface GameState {
   pendingKick: PendingKickChoice | null;
   pendingObstacle: PendingObstacleResult | null;
   pendingEvent: PendingEventResult | null;
-  extraTurnQueued: boolean;
   raceFinishOrder: string[];
   bannerText: string;
   logs: GameLogEntry[];

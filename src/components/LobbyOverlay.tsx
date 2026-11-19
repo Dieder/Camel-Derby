@@ -1,7 +1,8 @@
-import React from 'react';
-import { Bot, Play, Trophy, User, Users, Zap } from 'lucide-react';
+import React, { useState } from 'react';
+import { BookOpen, Bot, Play, Trophy, User, Users, Zap } from 'lucide-react';
 import { CAMEL_PALETTES, MODE_CONFIGS } from '../game/constants';
 import { GameMode, MatchFormat, PlayerConfig } from '../game/types';
+import { RulesModal } from './RulesModal';
 
 interface LobbyOverlayProps {
   mode: GameMode;
@@ -22,6 +23,7 @@ export const LobbyOverlay: React.FC<LobbyOverlayProps> = ({
   onChangePlayers,
   onStart,
 }) => {
+  const [showRules, setShowRules] = useState(false);
   const enabledCount = players.filter((p) => p.enabled).length;
 
   const setSeatMode = (idx: number, kind: 'human' | 'ai' | 'off') => {
@@ -68,7 +70,15 @@ export const LobbyOverlay: React.FC<LobbyOverlayProps> = ({
               Race across randomized hex tracks, stack camels to hitch rides, trigger desert events, and outsmart rivals with tactical dice and power-ups.
             </p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowRules(true)}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/50 text-amber-300 flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Rules</span>
+            </button>
             <button
               type="button"
               onClick={() => applyPreset('solo4')}
@@ -283,6 +293,7 @@ export const LobbyOverlay: React.FC<LobbyOverlayProps> = ({
           </div>
         </div>
       </div>
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
   );
 };

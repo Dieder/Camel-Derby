@@ -26,6 +26,10 @@ function makeLog(text: string, tone: GameLogEntry['tone'] = 'neutral'): GameLogE
   return { id: `log-${logCounter++}`, text, tone };
 }
 
+export function isInFinalSprintZone(position: number, trackLength: number): boolean {
+  return position >= Math.max(1, trackLength - 10);
+}
+
 export function createInitialGameState(
   mode: GameMode,
   format: MatchFormat,
@@ -41,10 +45,12 @@ export function createInitialGameState(
     color: cfg.color,
     isAI: cfg.isAI,
     position: 0,
-    stackOrder: idx, // neatly stacked or lined up at start
+    checkpoint: 0,
+    stackOrder: idx,
+    stamina: 3,
+    staminaMoveBoostQueued: false,
     powerUps: [],
     hasShield: false,
-    mirageShield: false,
     sprintActive: false,
     speedBoostQueued: false,
     stunnedTurns: 0,
@@ -71,12 +77,11 @@ export function createInitialGameState(
     pendingKick: null,
     pendingObstacle: null,
     pendingEvent: null,
-    extraTurnQueued: false,
     raceFinishOrder: [],
     bannerText: `${MODE_CONFIGS[mode].title} · Race 1 of ${totalRaces}`,
     logs: [
       makeLog(
-        `Race 1 begins on a randomized ${trackLength}-tile desert track!`,
+        `Race 1 begins on a ${trackLength}-tile round desert circuit!`,
         'event'
       ),
     ],
@@ -89,10 +94,12 @@ export function startNextRaceInChampionship(prev: GameState): GameState {
   const players: PlayerState[] = prev.players.map((p, idx) => ({
     ...p,
     position: 0,
+    checkpoint: 0,
     stackOrder: idx,
+    stamina: 3,
+    staminaMoveBoostQueued: false,
     powerUps: [],
     hasShield: false,
-    mirageShield: false,
     sprintActive: false,
     speedBoostQueued: false,
     stunnedTurns: 0,
@@ -113,11 +120,10 @@ export function startNextRaceInChampionship(prev: GameState): GameState {
     pendingKick: null,
     pendingObstacle: null,
     pendingEvent: null,
-    extraTurnQueued: false,
     raceFinishOrder: [],
-    bannerText: `Race ${nextRace} of ${prev.totalRaces} · New Desert Course!`,
+    bannerText: `Race ${nextRace} of ${prev.totalRaces} · New Desert Circuit!`,
     logs: [
-      makeLog(`Race ${nextRace} begins! New desert course generated.`, 'event'),
+      makeLog(`Race ${nextRace} begins! New desert circuit generated.`, 'event'),
       ...prev.logs.slice(0, 24),
     ],
   };
@@ -131,7 +137,7 @@ export function getStandingsSorted(players: PlayerState[]): PlayerState[] {
     if (a.finishedRank !== null) return -1;
     if (b.finishedRank !== null) return 1;
     if (b.position !== a.position) return b.position - a.position;
-    return b.stackOrder - a.stackOrder; // higher in stack leads ties
+    return b.stackOrder - a.stackOrder;
   });
 }
 
@@ -142,20 +148,7 @@ export function getChampionshipStandings(players: PlayerState[]): PlayerState[] 
   });
 }
 
-/**
- * Re-normalizes stackOrder (0..k-1) on a given space after camels join or leave.
- */
 function normalizeSpaceStack(players: PlayerState[], spacePos: number) {
-  if (spacePos === 0) {
-    // On Start tile (0), camels stand side-by-side cleanly by index order, unless stacked mid-race
-    const atZero = players
-      .filter((p) => p.position === 0 && p.finishedRank === null)
-      .sort((a, b) => a.stackOrder - b.stackOrder);
-    atZero.forEach((p, idx) => {
-      p.stackOrder = idx;
-    });
-    return;
-  }
   const onSpace = players
     .filter((p) => p.position === spacePos && p.finishedRank === null)
     .sort((a, b) => a.stackOrder - b.stackOrder);
@@ -164,16 +157,25 @@ function normalizeSpaceStack(players: PlayerState[], spacePos: number) {
   });
 }
 
+function updateCheckpointForPlayer(p: PlayerState, trackLength: number) {
+  if (p.position >= trackLength) return;
+  const reachedCheckpoint = Math.floor(p.position / 10) * 10;
+  if (reachedCheckpoint > p.checkpoint && reachedCheckpoint < trackLength) {
+    p.checkpoint = reachedCheckpoint;
+  }
+}
+
 /**
  * Moves a camel AND everyone stacked on top of it to `dest`.
- * Returns the list of moved player IDs and whether anyone finished.
+ * Backward movement never drops a camel below its own last checkpoint.
  */
 export function moveCamelStackTo(
   players: PlayerState[],
   moverId: string,
   dest: number,
   trackLength: number,
-  raceFinishOrder: string[]
+  raceFinishOrder: string[],
+  respectCheckpoint = true
 ): {
   movedIds: string[];
   stackedOntoName: string | null;
@@ -183,9 +185,9 @@ export function moveCamelStackTo(
   if (!mover) return { movedIds: [], stackedOntoName: null, newlyFinishedIds: [] };
 
   const oldPos = mover.position;
-  const clampedDest = Math.max(0, Math.min(trackLength, dest));
+  const minFloor = respectCheckpoint && dest < oldPos ? mover.checkpoint : 0;
+  const clampedDest = Math.max(minFloor, Math.min(trackLength, dest));
 
-  // If moving from start space 0, only move the mover alone (start line isn't a riding stack!)
   const movingGroup =
     oldPos === 0
       ? [mover]
@@ -207,7 +209,6 @@ export function moveCamelStackTo(
   const newlyFinishedIds: string[] = [];
 
   if (clampedDest >= trackLength) {
-    // Crossed finish line! Mover finishes first, riders finish immediately behind in order
     for (const p of movingGroup) {
       p.position = trackLength;
       if (!raceFinishOrder.includes(p.id)) {
@@ -220,7 +221,6 @@ export function moveCamelStackTo(
     return { movedIds, stackedOntoName: null, newlyFinishedIds };
   }
 
-  // Find existing stack on destination (excluding moving group)
   const existingOnDest = players
     .filter(
       (p) =>
@@ -237,7 +237,10 @@ export function moveCamelStackTo(
 
   let baseOrder = existingOnDest.length;
   for (const p of movingGroup) {
-    p.position = clampedDest;
+    const pMinFloor =
+      respectCheckpoint && clampedDest < oldPos ? p.checkpoint : 0;
+    p.position = Math.max(pMinFloor, clampedDest);
+    updateCheckpointForPlayer(p, trackLength);
     p.stackOrder = baseOrder++;
   }
 
@@ -256,18 +259,21 @@ export function rollD6(): number {
 
 export function rollObstacleOutcome(): { roll: number; outcome: ObstacleOutcome } {
   const roll = rollD6();
-  if (roll <= 2) return { roll, outcome: 'back_2' };
-  if (roll <= 4) return { roll, outcome: 'back_3' };
-  if (roll === 5) return { roll, outcome: 'lose_turn' };
-  return { roll, outcome: 'back_start' };
+  if (roll === 1) return { roll, outcome: 'back_2' };
+  if (roll === 2) return { roll, outcome: 'back_3' };
+  if (roll === 3) return { roll, outcome: 'lose_1' };
+  if (roll === 4) return { roll, outcome: 'lose_2' };
+  if (roll === 5) return { roll, outcome: 'back_checkpoint' };
+  return { roll, outcome: 'sandstorm_all' };
 }
 
 export function rollDesertEvent(): DesertEventType {
   const events: DesertEventType[] = [
     'sandstorm',
     'tailwind',
-    'mirage',
-    'water_stop',
+    'camel_stampede',
+    'oasis_festival',
+    'quicksand',
   ];
   return events[Math.floor(Math.random() * events.length)];
 }
@@ -291,7 +297,6 @@ export function isRaceComplete(state: GameState): boolean {
   if (state.format === 'single') {
     return state.raceFinishOrder.length >= 1;
   }
-  // Championship race ends as soon as 3 players finish OR all but 1 (or all for 2 players) finish
   const podiumSize = Math.min(3, state.players.length);
   if (state.players.length === 2) {
     return state.raceFinishOrder.length >= 1;
@@ -301,7 +306,6 @@ export function isRaceComplete(state: GameState): boolean {
 
 export function finalizeRaceScoring(state: GameState): GameState {
   const nextPlayers = state.players.map((p) => ({ ...p }));
-  // Assign remaining players by track position for display, and award championship points for top 3
   const sortedRemaining = getStandingsSorted(
     nextPlayers.filter((p) => p.finishedRank === null)
   );
@@ -347,7 +351,7 @@ export function finalizeRaceScoring(state: GameState): GameState {
 }
 
 /**
- * Computes movement destination considering Pass Player / No Passing rules.
+ * Computes movement destination considering Pass Player, No Passing, and Sand Walls.
  */
 export function computeMovementPlan(
   state: GameState,
@@ -357,6 +361,7 @@ export function computeMovementPlan(
 ): {
   dest: number;
   stoppedBehindName: string | null;
+  stoppedBySandWall: boolean;
   canOfferPassChoice: boolean;
   vaultDest: number;
   passedNames: string[];
@@ -364,8 +369,24 @@ export function computeMovementPlan(
   const start = mover.position;
   const rawDest = Math.min(state.trackLength, start + steps);
 
+  // Check if any Sand Wall sits on start+1..rawDest — Sand Wall forces an immediate stop there!
+  let effectiveMaxDest = rawDest;
+  let stoppedBySandWall = false;
+  for (let s = start + 1; s <= rawDest; s++) {
+    const tile = state.tiles[s];
+    if (
+      tile &&
+      tile.hazardKind === 'sand_wall' &&
+      tile.sandTrapOwnerId !== mover.id
+    ) {
+      effectiveMaxDest = s;
+      stoppedBySandWall = true;
+      break;
+    }
+  }
+
   if (actionFace === 'no_passing') {
-    for (let s = start + 1; s <= rawDest; s++) {
+    for (let s = start + 1; s <= effectiveMaxDest; s++) {
       if (s === state.trackLength) break;
       const blocker = state.players.find(
         (p) => p.id !== mover.id && p.finishedRank === null && p.position === s
@@ -374,6 +395,7 @@ export function computeMovementPlan(
         return {
           dest: Math.max(start, s - 1),
           stoppedBehindName: blocker.name,
+          stoppedBySandWall: false,
           canOfferPassChoice: false,
           vaultDest: s - 1,
           passedNames: [],
@@ -381,17 +403,17 @@ export function computeMovementPlan(
       }
     }
     return {
-      dest: rawDest,
+      dest: effectiveMaxDest,
       stoppedBehindName: null,
+      stoppedBySandWall,
       canOfferPassChoice: false,
-      vaultDest: rawDest,
+      vaultDest: effectiveMaxDest,
       passedNames: [],
     };
   }
 
-  // Identify camels passed or on rawDest
   const passedNames: string[] = [];
-  for (let s = start + 1; s <= rawDest; s++) {
+  for (let s = start + 1; s <= effectiveMaxDest; s++) {
     const onTile = state.players.filter(
       (p) => p.id !== mover.id && p.finishedRank === null && p.position === s
     );
@@ -400,13 +422,19 @@ export function computeMovementPlan(
     }
   }
 
-  if (actionFace === 'pass_player' && rawDest < state.trackLength) {
-    // If landing directly on another camel, offer choice: vault 1 space ahead (skipping consecutive occupied if needed) vs stack!
+  if (
+    actionFace === 'pass_player' &&
+    !stoppedBySandWall &&
+    effectiveMaxDest < state.trackLength
+  ) {
     const occupiedAtRaw = state.players.some(
-      (p) => p.id !== mover.id && p.finishedRank === null && p.position === rawDest
+      (p) =>
+        p.id !== mover.id &&
+        p.finishedRank === null &&
+        p.position === effectiveMaxDest
     );
     if (occupiedAtRaw) {
-      let vault = Math.min(state.trackLength, rawDest + 1);
+      let vault = Math.min(state.trackLength, effectiveMaxDest + 1);
       while (
         vault < state.trackLength &&
         state.players.some(
@@ -416,8 +444,9 @@ export function computeMovementPlan(
         vault++;
       }
       return {
-        dest: rawDest,
+        dest: effectiveMaxDest,
         stoppedBehindName: null,
+        stoppedBySandWall: false,
         canOfferPassChoice: true,
         vaultDest: vault,
         passedNames,
@@ -426,10 +455,11 @@ export function computeMovementPlan(
   }
 
   return {
-    dest: rawDest,
+    dest: effectiveMaxDest,
     stoppedBehindName: null,
+    stoppedBySandWall,
     canOfferPassChoice: false,
-    vaultDest: rawDest,
+    vaultDest: effectiveMaxDest,
     passedNames,
   };
 }
@@ -444,9 +474,7 @@ export function applyPostMoveResolution(
   const tiles = state.tiles.map((t) => ({ ...t }));
   const raceFinishOrder = [...state.raceFinishOrder];
   const mover = players.find((p) => p.id === moverId)!;
-  let extraTurnQueued = state.extraTurnQueued;
 
-  // Check if race already finished during movement
   if (isRaceComplete({ ...state, players, raceFinishOrder })) {
     return finalizeRaceScoring({
       ...state,
@@ -457,36 +485,47 @@ export function applyPostMoveResolution(
     });
   }
 
-  // 1. Check Sand Trap on landing space
+  // 1. Check Sand Wall or Quicksand hazard on landing tile
   const landedTile = tiles[mover.position];
-  if (
-    landedTile &&
-    landedTile.sandTrapOwnerId &&
-    landedTile.sandTrapOwnerId !== mover.id &&
-    mover.position > 0 &&
-    mover.position < state.trackLength
-  ) {
+  if (landedTile && landedTile.hazardKind === 'sand_wall') {
     landedTile.sandTrapOwnerId = null;
+    landedTile.hazardKind = null;
+    logsToAdd.unshift(
+      makeLog(`${mover.name} hit a Sand Wall and had to stop!`, 'bad')
+    );
+  } else if (landedTile && landedTile.hazardKind === 'quicksand') {
+    landedTile.sandTrapOwnerId = null;
+    landedTile.hazardKind = null;
     if (mover.hasShield) {
       mover.hasShield = false;
       logsToAdd.unshift(
-        makeLog(`${mover.name}'s Shield shattered a Sand Trap!`, 'good')
+        makeLog(`${mover.name}'s Shield rescued them from Quicksand!`, 'good')
       );
     } else {
       mover.stunnedTurns += 1;
       logsToAdd.unshift(
-        makeLog(`${mover.name} stepped into a Sand Trap and loses 1 turn!`, 'bad')
+        makeLog(`${mover.name} sank into Quicksand and loses 1 turn!`, 'bad')
       );
     }
   }
 
-  // 2. Check Power-Up Space (4, 8, 12, ...)
+  // 2. Checkpoint announcement
+  if (landedTile && landedTile.spaceType === 'checkpoint') {
+    logsToAdd.unshift(
+      makeLog(
+        `${mover.name} reached Checkpoint ${landedTile.index}! Safe from falling behind it.`,
+        'good'
+      )
+    );
+  }
+
+  // 3. Check Power-Up Space (4, 8, 12, ...)
   if (landedTile && landedTile.spaceType === 'powerup') {
     const drawn = drawRandomPowerUp();
     if (drawn === 'shield' && !mover.hasShield) {
       mover.hasShield = true;
       logsToAdd.unshift(
-        makeLog(`${mover.name} landed on a Power-Up tile and activated a Shield!`, 'good')
+        makeLog(`${mover.name} landed on Power-Up and activated a Shield!`, 'good')
       );
     } else {
       mover.powerUps.push(drawn);
@@ -499,7 +538,7 @@ export function applyPostMoveResolution(
     }
   }
 
-  // 3. Check Action Die: Power-Up (3)
+  // 4. Action Die: Power-Up (3)
   if (actionFace === 'powerup') {
     const drawn = drawRandomPowerUp();
     if (drawn === 'shield' && !mover.hasShield) {
@@ -515,7 +554,7 @@ export function applyPostMoveResolution(
     }
   }
 
-  // 4. Check Action Die: Kick Player (6)
+  // 5. Action Die: Kick Player (6)
   if (actionFace === 'kick_player') {
     const adjacent = getAdjacentTargets(players, mover.id);
     if (adjacent.length > 0) {
@@ -525,7 +564,6 @@ export function applyPostMoveResolution(
           players,
           tiles,
           raceFinishOrder,
-          extraTurnQueued,
           phase: 'kick_choice',
           pendingKick: {
             playerId: mover.id,
@@ -535,17 +573,15 @@ export function applyPostMoveResolution(
           logs: [...logsToAdd, ...state.logs].slice(0, 30),
         };
       } else {
-        // AI picks highest-positioned adjacent opponent
         const target = [...adjacent].sort((a, b) => b.position - a.position)[0];
         const kickMode: 'push' | 'stun' =
-          target.position >= 3 ? 'push' : 'stun';
+          target.position > target.checkpoint + 2 ? 'push' : 'stun';
         const kickedState = executeKick(
           {
             ...state,
             players,
             tiles,
             raceFinishOrder,
-            extraTurnQueued,
             logs: [...logsToAdd, ...state.logs].slice(0, 30),
           },
           mover.id,
@@ -553,7 +589,6 @@ export function applyPostMoveResolution(
           kickMode,
           false
         );
-        // After AI kick, still check obstacle on tile if landed on obstacle space!
         return checkObstacleAfterAction(kickedState, mover.id, actionFace);
       }
     } else {
@@ -563,17 +598,17 @@ export function applyPostMoveResolution(
     }
   }
 
-  // 5. Check Obstacle (Action Die = 2 OR Obstacle Space 3, 7, 11...)
-  const nextBase: GameState = {
-    ...state,
-    players,
-    tiles,
-    raceFinishOrder,
-    extraTurnQueued,
-    logs: [...logsToAdd, ...state.logs].slice(0, 30),
-  };
-
-  return checkObstacleAfterAction(nextBase, mover.id, actionFace);
+  return checkObstacleAfterAction(
+    {
+      ...state,
+      players,
+      tiles,
+      raceFinishOrder,
+      logs: [...logsToAdd, ...state.logs].slice(0, 30),
+    },
+    mover.id,
+    actionFace
+  );
 }
 
 export function checkObstacleAfterAction(
@@ -594,20 +629,6 @@ export function checkObstacleAfterAction(
     mover.position < state.trackLength
   ) {
     const source = triggeredByAction ? 'action_die' : 'obstacle_tile';
-    if (mover.mirageShield) {
-      mover.mirageShield = false;
-      return advanceTurnOrRound({
-        ...state,
-        players,
-        logs: [
-          makeLog(
-            `${mover.name} ignored the Obstacle thanks to Mirage!`,
-            'good'
-          ),
-          ...state.logs,
-        ].slice(0, 30),
-      });
-    }
     if (mover.hasShield) {
       mover.hasShield = false;
       return advanceTurnOrRound({
@@ -615,7 +636,7 @@ export function checkObstacleAfterAction(
         players,
         logs: [
           makeLog(
-            `${mover.name}'s Shield blocked the Obstacle effect!`,
+            `${mover.name}'s Shield blocked the hidden Obstacle Card!`,
             'good'
           ),
           ...state.logs,
@@ -624,6 +645,8 @@ export function checkObstacleAfterAction(
     }
 
     const { roll, outcome } = rollObstacleOutcome();
+    const inFinalSprint = isInFinalSprintZone(mover.position, state.trackLength);
+
     if (!mover.isAI) {
       return {
         ...state,
@@ -633,10 +656,10 @@ export function checkObstacleAfterAction(
           playerId: mover.id,
           roll,
           outcome,
-          blockedBy: null,
+          inFinalSprint,
           source,
         },
-        bannerText: `${mover.name} hit an Obstacle!`,
+        bannerText: `${mover.name} drew a Hidden Obstacle Card!`,
       };
     } else {
       return resolveObstacleEffect(
@@ -647,7 +670,7 @@ export function checkObstacleAfterAction(
             playerId: mover.id,
             roll,
             outcome,
-            blockedBy: null,
+            inFinalSprint,
             source,
           },
         },
@@ -672,37 +695,63 @@ export function resolveObstacleEffect(
   const logs = [...state.logs];
 
   if (obs.outcome === 'back_2') {
-    const dest = Math.max(0, mover.position - 2);
-    moveCamelStackTo(players, mover.id, dest, state.trackLength, raceFinishOrder);
+    const penalty = obs.inFinalSprint ? 4 : 2;
+    const dest = Math.max(mover.checkpoint, mover.position - penalty);
+    moveCamelStackTo(players, mover.id, dest, state.trackLength, raceFinishOrder, true);
     logs.unshift(
       makeLog(
-        `Obstacle (${obs.roll}): ${mover.name} slid back 2 spaces to tile ${dest}!`,
+        `Obstacle (${obs.roll}): ${mover.name} pushed back ${penalty} spaces to tile ${mover.position}!`,
         'bad'
       )
     );
   } else if (obs.outcome === 'back_3') {
-    const dest = Math.max(0, mover.position - 3);
-    moveCamelStackTo(players, mover.id, dest, state.trackLength, raceFinishOrder);
+    const dest = Math.max(mover.checkpoint, mover.position - 3);
+    moveCamelStackTo(players, mover.id, dest, state.trackLength, raceFinishOrder, true);
     logs.unshift(
       makeLog(
-        `Obstacle (${obs.roll}): ${mover.name} stumbled back 3 spaces to tile ${dest}!`,
+        `Obstacle (${obs.roll}): ${mover.name} stumbled back 3 spaces to tile ${mover.position}!`,
         'bad'
       )
     );
-  } else if (obs.outcome === 'lose_turn') {
+  } else if (obs.outcome === 'lose_1') {
     mover.stunnedTurns += 1;
     logs.unshift(
+      makeLog(`Obstacle (${obs.roll}): ${mover.name} loses 1 turn!`, 'bad')
+    );
+  } else if (obs.outcome === 'lose_2') {
+    mover.stunnedTurns += 2;
+    logs.unshift(
+      makeLog(`Obstacle (${obs.roll}): ${mover.name} loses 2 turns!`, 'bad')
+    );
+  } else if (obs.outcome === 'back_checkpoint') {
+    moveCamelStackTo(
+      players,
+      mover.id,
+      mover.checkpoint,
+      state.trackLength,
+      raceFinishOrder,
+      true
+    );
+    logs.unshift(
       makeLog(
-        `Obstacle (${obs.roll}): ${mover.name} got stuck in quicksand and loses next turn!`,
+        `Obstacle (${obs.roll}): ${mover.name} sent back to Checkpoint ${mover.checkpoint}!`,
         'bad'
       )
     );
   } else {
-    moveCamelStackTo(players, mover.id, 0, state.trackLength, raceFinishOrder);
+    // Zandstorm (-1 for everyone, clamped at checkpoint)
+    for (const p of players) {
+      if (p.finishedRank === null && p.position > p.checkpoint) {
+        p.position = Math.max(p.checkpoint, p.position - 1);
+      }
+    }
+    for (let s = 0; s < state.trackLength; s++) {
+      normalizeSpaceStack(players, s);
+    }
     logs.unshift(
       makeLog(
-        `Obstacle (${obs.roll}): Brutal! ${mover.name} was sent all the way back to Start!`,
-        'bad'
+        `Obstacle (${obs.roll}) — Sandstorm! Every camel drops 1 space (safe at checkpoints).`,
+        'event'
       )
     );
   }
@@ -735,23 +784,23 @@ export function executeKick(
     target.hasShield = false;
     logs.unshift(
       makeLog(
-        `${kicker.name} tried to kick ${target.name}, but ${target.name}'s Shield blocked it!`,
+        `${kicker.name} tried to kick ${target.name}, but Shield blocked it!`,
         'good'
       )
     );
   } else if (mode === 'push') {
-    const dest = Math.max(0, target.position - 3);
-    moveCamelStackTo(players, target.id, dest, state.trackLength, raceFinishOrder);
+    const dest = Math.max(target.checkpoint, target.position - 3);
+    moveCamelStackTo(players, target.id, dest, state.trackLength, raceFinishOrder, true);
     logs.unshift(
       makeLog(
-        `${kicker.name} kicked ${target.name} back 3 spaces to tile ${dest}!`,
+        `${kicker.name} kicked ${target.name} back 3 spaces to tile ${target.position}!`,
         'bad'
       )
     );
   } else {
     target.stunnedTurns += 1;
     logs.unshift(
-      makeLog(`${kicker.name} kicked and stunned ${target.name} for 1 turn!`, 'bad')
+      makeLog(`${kicker.name} stunned ${target.name} for 1 turn!`, 'bad')
     );
   }
 
@@ -769,31 +818,12 @@ export function executeKick(
   return next;
 }
 
-/**
- * Advances to the next active player, or triggers the end-of-round Desert Event Die!
- */
 export function advanceTurnOrRound(state: GameState): GameState {
   if (isRaceComplete(state)) {
     return finalizeRaceScoring(state);
   }
 
   const players = state.players.map((p) => ({ ...p }));
-
-  // Check if Oasis Refresh queued an immediate extra turn for current player
-  if (state.extraTurnQueued) {
-    const cur = players[state.currentPlayerIndex];
-    if (cur && cur.finishedRank === null) {
-      return {
-        ...state,
-        players,
-        extraTurnQueued: false,
-        phase: 'awaiting_roll',
-        bannerText: `${cur.name}'s Oasis Refresh bonus turn!`,
-      };
-    }
-  }
-
-  // Find next unfinished player
   let nextIdx = state.currentPlayerIndex + 1;
   let wrappedRound = false;
 
@@ -810,7 +840,6 @@ export function advanceTurnOrRound(state: GameState): GameState {
   }
 
   if (wrappedRound) {
-    // All players have had a turn this round -> Roll Desert Event Die!
     const event = rollDesertEvent();
     return applyDesertEvent(
       {
@@ -822,7 +851,6 @@ export function advanceTurnOrRound(state: GameState): GameState {
     );
   }
 
-  // Skip turns if next player is blockaded or stunned, logging cleanly and keeping round wrapping accurate
   return preparePlayerTurn({
     ...state,
     players,
@@ -840,14 +868,10 @@ function preparePlayerTurn(state: GameState): GameState {
     const player = current.players[idx];
 
     if (!player || player.finishedRank !== null) {
-      // Find next unfinished
-      let nextIdx = idx + 1;
+      const nextIdx = idx + 1;
       if (nextIdx >= current.players.length) {
         const event = rollDesertEvent();
-        return applyDesertEvent(
-          { ...current, currentPlayerIndex: 0 },
-          event
-        );
+        return applyDesertEvent({ ...current, currentPlayerIndex: 0 }, event);
       }
       current = { ...current, currentPlayerIndex: nextIdx };
       continue;
@@ -859,13 +883,13 @@ function preparePlayerTurn(state: GameState): GameState {
       );
       const logs = [
         makeLog(
-          `${player.name} is Blockaded and skips this turn (${player.blockadeTurns - 1} left).`,
+          `${player.name} is Blocked and skips this turn (${player.blockadeTurns - 1} left).`,
           'bad'
         ),
         ...current.logs,
       ].slice(0, 30);
 
-      let nextIdx = idx + 1;
+      const nextIdx = idx + 1;
       if (nextIdx >= players.length) {
         const event = rollDesertEvent();
         return applyDesertEvent(
@@ -882,11 +906,11 @@ function preparePlayerTurn(state: GameState): GameState {
         i === idx ? { ...p, stunnedTurns: p.stunnedTurns - 1 } : p
       );
       const logs = [
-        makeLog(`${player.name} is recovering from a stun and skips this turn.`, 'bad'),
+        makeLog(`${player.name} skips this turn (${player.stunnedTurns - 1} left).`, 'bad'),
         ...current.logs,
       ].slice(0, 30);
 
-      let nextIdx = idx + 1;
+      const nextIdx = idx + 1;
       if (nextIdx >= players.length) {
         const event = rollDesertEvent();
         return applyDesertEvent(
@@ -913,29 +937,29 @@ export function applyDesertEvent(
   event: DesertEventType
 ): GameState {
   const players = state.players.map((p) => ({ ...p }));
+  const tiles = state.tiles.map((t) => ({ ...t }));
   const raceFinishOrder = [...state.raceFinishOrder];
   const logs = [...state.logs];
 
   if (event === 'sandstorm') {
     for (const p of players) {
-      if (p.finishedRank === null && p.position > 0) {
-        p.position = Math.max(0, p.position - 2);
+      if (p.finishedRank === null && p.position > p.checkpoint) {
+        p.position = Math.max(p.checkpoint, p.position - 2);
       }
     }
-    // Re-normalize stacks
     for (let s = 0; s < state.trackLength; s++) {
       normalizeSpaceStack(players, s);
     }
     logs.unshift(
-      makeLog(`Desert Event — Sandstorm! All camels blown back 2 spaces.`, 'event')
+      makeLog(`Desert Event — Sandstorm! Everyone blown back 2 spaces (safe at checkpoints).`, 'event')
     );
   } else if (event === 'tailwind') {
-    // Move leaders first so finishing order respects existing lead
     const ordered = getStandingsSorted(players);
     for (const ref of ordered) {
       const p = players.find((x) => x.id === ref.id)!;
       if (p.finishedRank === null) {
-        p.position = Math.min(state.trackLength, p.position + 1);
+        p.position = Math.min(state.trackLength, p.position + 2);
+        updateCheckpointForPlayer(p, state.trackLength);
         if (p.position >= state.trackLength) {
           raceFinishOrder.push(p.id);
           p.finishedRank = raceFinishOrder.length;
@@ -943,26 +967,48 @@ export function applyDesertEvent(
       }
     }
     logs.unshift(
-      makeLog(`Desert Event — Tailwind! Every camel surges forward 1 space.`, 'event')
+      makeLog(`Desert Event — Tailwind! Every camel surges forward +2 spaces!`, 'event')
     );
-  } else if (event === 'mirage') {
+  } else if (event === 'camel_stampede') {
+    const ordered = getStandingsSorted(players.filter((p) => p.finishedRank === null));
+    const lastPlace = ordered[ordered.length - 1];
+    if (lastPlace) {
+      const p = players.find((x) => x.id === lastPlace.id)!;
+      moveCamelStackTo(
+        players,
+        p.id,
+        p.position + 4,
+        state.trackLength,
+        raceFinishOrder,
+        true
+      );
+      logs.unshift(
+        makeLog(`Desert Event — Camel Stampede! ${p.name} charges +4 spaces!`, 'event')
+      );
+    }
+  } else if (event === 'oasis_festival') {
     for (const p of players) {
-      if (p.finishedRank === null) p.mirageShield = true;
+      if (p.finishedRank === null) {
+        const card = drawRandomPowerUp();
+        if (card === 'shield' && !p.hasShield) p.hasShield = true;
+        else p.powerUps.push(card);
+      }
     }
     logs.unshift(
-      makeLog(`Desert Event — Mirage! Everyone ignores their next obstacle.`, 'event')
+      makeLog(`Desert Event — Oasis Festival! Every camel receives a Power-Up!`, 'event')
     );
-  } else if (event === 'water_stop') {
-    for (const p of players) {
-      if (p.finishedRank === null) p.hasShield = true;
+  } else if (event === 'quicksand') {
+    const qTileIdx = Math.min(state.trackLength - 2, Math.floor(state.trackLength / 2));
+    if (tiles[qTileIdx]) {
+      tiles[qTileIdx].sandTrapOwnerId = 'event';
+      tiles[qTileIdx].hazardKind = 'quicksand';
     }
     logs.unshift(
-      makeLog(`Desert Event — Water Stop! Every camel gains a Shield.`, 'event')
+      makeLog(`Desert Event — Quicksand! Tile ${qTileIdx} turned into dangerous quicksand!`, 'event')
     );
   }
 
   const nextRound = state.round + 1;
-  // Find first unfinished player for new round
   const firstActiveIdx = Math.max(
     0,
     players.findIndex((p) => p.finishedRank === null)
@@ -971,6 +1017,7 @@ export function applyDesertEvent(
   const afterEventState: GameState = {
     ...state,
     round: nextRound,
+    tiles,
     players,
     raceFinishOrder,
     currentPlayerIndex: firstActiveIdx,
@@ -995,6 +1042,24 @@ export function dismissEventAndPrepareTurn(state: GameState): GameState {
   });
 }
 
+export function spendStaminaForPlusOne(
+  state: GameState,
+  playerId: string
+): GameState {
+  const players = state.players.map((p) => ({ ...p }));
+  const user = players.find((p) => p.id === playerId);
+  if (!user || user.stamina <= 0 || user.staminaMoveBoostQueued) return state;
+
+  user.stamina -= 1;
+  user.staminaMoveBoostQueued = true;
+  const logs = [
+    makeLog(`${user.name} spent 1 Stamina for +1 Movement!`, 'good'),
+    ...state.logs,
+  ].slice(0, 30);
+
+  return { ...state, players, logs };
+}
+
 export function usePowerUpPreRoll(
   state: GameState,
   playerId: string,
@@ -1015,7 +1080,8 @@ export function usePowerUpPreRoll(
   if (powerUp === 'speed_boost') {
     user.powerUps.splice(idx, 1);
     user.speedBoostQueued = true;
-    logs.unshift(makeLog(`${user.name} activated Speed Boost (+4 movement)!`, 'good'));
+    const bonus = isInFinalSprintZone(user.position, state.trackLength) ? 6 : 4;
+    logs.unshift(makeLog(`${user.name} activated Speed Boost (+${bonus} steps)!`, 'good'));
     return { ...state, players, logs: logs.slice(0, 30) };
   }
 
@@ -1027,35 +1093,50 @@ export function usePowerUpPreRoll(
     return { ...state, players, logs: logs.slice(0, 30) };
   }
 
-  if (powerUp === 'sprint_potion') {
+  if (powerUp === 'turbo_sprint') {
     user.powerUps.splice(idx, 1);
     user.sprintActive = true;
     logs.unshift(
-      makeLog(`${user.name} drank a Sprint Potion (2x next movement roll)!`, 'good')
+      makeLog(`${user.name} activated Turbo Sprint (2x next movement roll)!`, 'good')
     );
     return { ...state, players, logs: logs.slice(0, 30) };
   }
 
-  if (powerUp === 'oasis_refresh') {
+  if (powerUp === 'swap') {
+    // Swap positions with the nearest rival strictly ahead of user
+    const ahead = players
+      .filter(
+        (p) =>
+          p.id !== user.id &&
+          p.finishedRank === null &&
+          p.position > user.position
+      )
+      .sort((a, b) => a.position - b.position);
+    if (ahead.length === 0) return state;
+    const rival = ahead[0];
     user.powerUps.splice(idx, 1);
+
+    const userOldPos = user.position;
+    const userOldStack = user.stackOrder;
+    user.position = rival.position;
+    user.stackOrder = rival.stackOrder;
+    rival.position = userOldPos;
+    rival.stackOrder = userOldStack;
+    updateCheckpointForPlayer(user, state.trackLength);
+
     logs.unshift(
-      makeLog(`${user.name} used Oasis Refresh — bonus turn queued!`, 'good')
+      makeLog(`${user.name} used Swap and traded places with ${rival.name} (Tile ${user.position})!`, 'good')
     );
-    return {
-      ...state,
-      players,
-      extraTurnQueued: true,
-      logs: logs.slice(0, 30),
-    };
+    return { ...state, players, logs: logs.slice(0, 30) };
   }
 
-  if (powerUp === 'blockade' && targetPlayerId) {
+  if (powerUp === 'block' && targetPlayerId) {
     const target = players.find((p) => p.id === targetPlayerId);
     if (!target) return state;
     user.powerUps.splice(idx, 1);
     target.blockadeTurns += 2;
     logs.unshift(
-      makeLog(`${user.name} placed a Blockade on ${target.name} (2 turns)!`, 'bad')
+      makeLog(`${user.name} played Block on ${target.name} (loses 2 turns)!`, 'bad')
     );
     return {
       ...state,
@@ -1066,15 +1147,16 @@ export function usePowerUpPreRoll(
   }
 
   if (
-    powerUp === 'sand_trap' &&
+    powerUp === 'sand_wall' &&
     typeof targetTileIndex === 'number' &&
     targetTileIndex > 0 &&
     targetTileIndex < state.trackLength
   ) {
     user.powerUps.splice(idx, 1);
     tiles[targetTileIndex].sandTrapOwnerId = user.id;
+    tiles[targetTileIndex].hazardKind = 'sand_wall';
     logs.unshift(
-      makeLog(`${user.name} buried a Sand Trap on tile ${targetTileIndex}!`, 'bad')
+      makeLog(`${user.name} built a Sand Wall on tile ${targetTileIndex}!`, 'bad')
     );
     return {
       ...state,
@@ -1094,34 +1176,40 @@ export function getActionDieLabel(num: number): string {
 
 export function pickAIPreRollPowerUp(state: GameState, ai: PlayerState): GameState {
   let cur = state;
-  // Use speed_boost or sprint_potion if available
-  if (ai.powerUps.includes('sprint_potion') && !ai.sprintActive) {
-    cur = usePowerUpPreRoll(cur, ai.id, 'sprint_potion');
-  } else if (ai.powerUps.includes('speed_boost') && !ai.speedBoostQueued) {
+  if (ai.powerUps.includes('swap')) {
+    const ahead = cur.players.some(
+      (p) => p.id !== ai.id && p.finishedRank === null && p.position > ai.position
+    );
+    if (ahead) {
+      cur = usePowerUpPreRoll(cur, ai.id, 'swap');
+    }
+  }
+
+  const ai1 = cur.players.find((p) => p.id === ai.id)!;
+  if (ai1.powerUps.includes('turbo_sprint') && !ai1.sprintActive) {
+    cur = usePowerUpPreRoll(cur, ai.id, 'turbo_sprint');
+  } else if (ai1.powerUps.includes('speed_boost') && !ai1.speedBoostQueued) {
     cur = usePowerUpPreRoll(cur, ai.id, 'speed_boost');
   }
 
-  // Use shield if not already shielded
-  const updatedAi = cur.players.find((p) => p.id === ai.id)!;
-  if (updatedAi.powerUps.includes('shield') && !updatedAi.hasShield) {
+  const ai2 = cur.players.find((p) => p.id === ai.id)!;
+  if (ai2.powerUps.includes('shield') && !ai2.hasShield) {
     cur = usePowerUpPreRoll(cur, ai.id, 'shield');
   }
 
-  // Use blockade on the leading rival
-  const aiAfter = cur.players.find((p) => p.id === ai.id)!;
-  if (aiAfter.powerUps.includes('blockade')) {
+  const ai3 = cur.players.find((p) => p.id === ai.id)!;
+  if (ai3.powerUps.includes('block')) {
     const rivals = cur.players.filter(
       (p) => p.id !== ai.id && p.finishedRank === null
     );
     if (rivals.length > 0) {
       const leader = [...rivals].sort((a, b) => b.position - a.position)[0];
-      cur = usePowerUpPreRoll(cur, ai.id, 'blockade', leader.id);
+      cur = usePowerUpPreRoll(cur, ai.id, 'block', leader.id);
     }
   }
 
-  // Use sand_trap ahead of the nearest rival
-  const aiAfter2 = cur.players.find((p) => p.id === ai.id)!;
-  if (aiAfter2.powerUps.includes('sand_trap')) {
+  const ai4 = cur.players.find((p) => p.id === ai.id)!;
+  if (ai4.powerUps.includes('sand_wall')) {
     const rivals = cur.players.filter(
       (p) => p.id !== ai.id && p.finishedRank === null
     );
@@ -1132,15 +1220,15 @@ export function pickAIPreRollPowerUp(state: GameState, ai: PlayerState): GameSta
         Math.max(1, targetRival.position + 3)
       );
       if (!cur.tiles[desiredTile].sandTrapOwnerId) {
-        cur = usePowerUpPreRoll(cur, ai.id, 'sand_trap', undefined, desiredTile);
+        cur = usePowerUpPreRoll(cur, ai.id, 'sand_wall', undefined, desiredTile);
       }
     }
   }
 
-  // Use oasis_refresh right away
-  const aiAfter3 = cur.players.find((p) => p.id === ai.id)!;
-  if (aiAfter3.powerUps.includes('oasis_refresh') && !cur.extraTurnQueued) {
-    cur = usePowerUpPreRoll(cur, ai.id, 'oasis_refresh');
+  // AI occasionally spends 1 stamina when close to finish
+  const ai5 = cur.players.find((p) => p.id === ai.id)!;
+  if (ai5.stamina > 0 && cur.trackLength - ai5.position <= 7) {
+    cur = spendStaminaForPlusOne(cur, ai.id);
   }
 
   return cur;

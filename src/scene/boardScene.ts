@@ -11,10 +11,21 @@ import { CamelRig, createCamelModel } from './camelModel';
 import {
   BanditProp,
   BlowMachineProp,
+  CrocodileProp,
+  DesertTentProp,
+  DesertTrainSystem,
+  ParrotProp,
+  SailShipProp,
   buildBanditWithGun,
   buildBlowMachine,
+  buildCheckpointGate,
+  buildCrocodile,
+  buildDesertTent,
+  buildDesertTrainSystem,
   buildDistantDesertCity,
+  buildFlyingParrot,
   buildPowerUpPedestal,
+  buildSailShip,
 } from './props';
 import {
   createContactShadowTexture,
@@ -25,6 +36,8 @@ import {
 // Pre-allocated math helpers (zero GC in render loop)
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
+const _trainPos = new THREE.Vector3();
+const _trainTan = new THREE.Vector3();
 const _targetCamPos = new THREE.Vector3();
 const _targetLook = new THREE.Vector3();
 const _skyColor = new THREE.Color();
@@ -43,49 +56,65 @@ const TIME_PRESETS: Record<
     hemiSky: number;
     hemiGround: number;
     hemiIntensity: number;
+    rimIntensity: number;
+    envIntensity: number;
     exposure: number;
     starsOpacity: number;
     cityGlow: number;
+    boxGlow: number;
+    boxLightIntensity: number;
   }
 > = {
   day: {
     sky: 0x7dd3fc,
-    fogDensity: 0.0038,
+    fogDensity: 0.0034,
     sunColor: 0xfff3d1,
     sunIntensity: 2.1,
     sunPos: [28, 42, 22],
     hemiSky: 0xbae6fd,
     hemiGround: 0xd97706,
     hemiIntensity: 0.85,
+    rimIntensity: 0.45,
+    envIntensity: 1.0,
     exposure: 1.08,
     starsOpacity: 0,
     cityGlow: 0.15,
+    boxGlow: 0.0,
+    boxLightIntensity: 0.0,
   },
   sunset: {
     sky: 0xfb923c,
-    fogDensity: 0.0046,
+    fogDensity: 0.0044,
     sunColor: 0xff7b3a,
-    sunIntensity: 1.95,
+    sunIntensity: 1.85,
     sunPos: [-36, 16, -24],
     hemiSky: 0xfda4af,
     hemiGround: 0x7c2d12,
-    hemiIntensity: 0.78,
-    exposure: 1.05,
+    hemiIntensity: 0.72,
+    rimIntensity: 0.3,
+    envIntensity: 0.65,
+    exposure: 1.02,
     starsOpacity: 0.25,
-    cityGlow: 0.85,
+    cityGlow: 0.95,
+    boxGlow: 0.3,
+    boxLightIntensity: 0.85,
   },
   night: {
-    sky: 0x0f172a,
-    fogDensity: 0.0052,
-    sunColor: 0x93c5fd,
-    sunIntensity: 0.95,
+    sky: 0x040712,
+    fogDensity: 0.0064,
+    sunColor: 0x64748b,
+    sunIntensity: 0.28,
     sunPos: [-20, 36, 26],
-    hemiSky: 0x334155,
-    hemiGround: 0x1e1b4b,
-    hemiIntensity: 0.65,
-    exposure: 0.96,
-    starsOpacity: 0.95,
-    cityGlow: 1.6,
+    hemiSky: 0x1e293b,
+    hemiGround: 0x090d16,
+    hemiIntensity: 0.18,
+    rimIntensity: 0.12,
+    envIntensity: 0.2,
+    exposure: 0.94,
+    starsOpacity: 1.0,
+    cityGlow: 2.2,
+    boxGlow: 0.95,
+    boxLightIntensity: 3.1,
   },
 };
 
@@ -96,6 +125,7 @@ export interface BoardSceneHandle {
   setCameraMode: (mode: CameraMode, focusTileIndex?: number) => void;
   setTimeOfDay: (tod: TimeOfDay) => void;
   setTileSelectionMode: (enabled: boolean) => void;
+  setVictoryCelebration: (winnerId: string | null) => void;
   triggerSandstormVisual: () => void;
   dispose: () => void;
 }
@@ -167,22 +197,23 @@ export function mountBoardScene(
   scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
   pmremGenerator.dispose();
 
-  const camera = new THREE.PerspectiveCamera(46, width / height, 0.3, 440);
-  camera.position.set(0, 26, 42);
+  const camera = new THREE.PerspectiveCamera(46, width / height, 0.3, 460);
+  camera.position.set(0, 42, 74);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = !isSoftwareGl;
   controls.dampingFactor = 0.07;
   controls.maxPolarAngle = Math.PI * 0.46;
-  controls.minDistance = 8;
-  controls.maxDistance = 120;
-  controls.target.set(0, 0.5, 0);
+  controls.minDistance = 10;
+  controls.maxDistance = 165;
+  controls.target.set(0, 0.5, -4);
 
   let scriptedCamActive = true;
   let currentCameraMode: CameraMode = 'overview';
   let currentTimeOfDay: TimeOfDay = 'day';
   let tileSelectionEnabled = false;
   let sandstormBurstTimer = 0;
+  let celebrationWinnerId: string | null = null;
 
   controls.addEventListener('start', () => {
     scriptedCamActive = false;
@@ -204,12 +235,12 @@ export function mountBoardScene(
   sunLight.position.set(...TIME_PRESETS.day.sunPos);
   sunLight.castShadow = !isSoftwareGl;
   sunLight.shadow.mapSize.set(2048, 2048);
-  sunLight.shadow.camera.left = -52;
-  sunLight.shadow.camera.right = 52;
-  sunLight.shadow.camera.top = 52;
-  sunLight.shadow.camera.bottom = -52;
+  sunLight.shadow.camera.left = -56;
+  sunLight.shadow.camera.right = 56;
+  sunLight.shadow.camera.top = 56;
+  sunLight.shadow.camera.bottom = -56;
   sunLight.shadow.camera.near = 2;
-  sunLight.shadow.camera.far = 140;
+  sunLight.shadow.camera.far = 150;
   sunLight.shadow.bias = -0.0005;
   sunLight.shadow.normalBias = 0.02;
   scene.add(sunLight);
@@ -217,6 +248,19 @@ export function mountBoardScene(
   const rimLight = new THREE.DirectionalLight(0xfde68a, 0.45);
   rimLight.position.set(-24, 18, -28);
   scene.add(rimLight);
+
+  // Night Box Lights & Active Camel Right-Back Lamp Light (castShadow = false for WebGL safety)
+  const camelLampLight = new THREE.PointLight(0xffb74d, 0, 12, 1.5);
+  scene.add(camelLampLight);
+
+  const boxPointLights: THREE.PointLight[] = [];
+  const boxLightColors = [0xfef08a, 0x38bdf8, 0xfbbf24, 0x2dd4bf, 0xfb923c];
+  for (let i = 0; i < 5; i++) {
+    const pl = new THREE.PointLight(boxLightColors[i], 0, 22, 1.4);
+    pl.position.set(0, 3.2, 0);
+    scene.add(pl);
+    boxPointLights.push(pl);
+  }
 
   // Stylized Sun / Moon Disc in Sky
   const celestialMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
@@ -360,13 +404,73 @@ export function mountBoardScene(
   const trackDisposables: Array<{ dispose: () => void }> = [];
 
   const tileMeshes: THREE.Mesh[] = [];
-  const trapMarkers: Map<number, THREE.Group> = new Map();
+  const tileTopMats: THREE.MeshStandardMaterial[] = [];
+  const trapMarkers: Map<number, { group: THREE.Group; kind: 'sand_wall' | 'quicksand' }> = new Map();
   const palmCanopies: THREE.Group[] = [];
   const bandits: BanditProp[] = [];
   const blowMachines: BlowMachineProp[] = [];
   const powerCrystals: THREE.Mesh[] = [];
+  const desertTents: DesertTentProp[] = [];
+  let crocodileProp: CrocodileProp | null = null;
+  let flyingParrot: ParrotProp | null = null;
+  let sailShip: SailShipProp | null = null;
+  let desertTrain: DesertTrainSystem | null = null;
   let oasisWaterMesh: THREE.Mesh | null = null;
+  let lagoonCruiseRadius = 8;
   let cachedTiles: BoardTile[] = [];
+
+  // 3D Winner Confetti Particle System (reused without GC)
+  const confettiCount = 140;
+  const confettiGroup = new THREE.Group();
+  confettiGroup.visible = false;
+  scene.add(confettiGroup);
+  const confettiGeo = new THREE.PlaneGeometry(0.26, 0.16);
+  const confettiColors = [0xef4444, 0xfacc15, 0x3b82f6, 0x22c55e, 0xa855f7, 0xf97316];
+  const confettiMats = confettiColors.map(
+    (c) =>
+      new THREE.MeshBasicMaterial({
+        color: c,
+        side: THREE.DoubleSide,
+      })
+  );
+  interface ConfettiPiece {
+    mesh: THREE.Mesh;
+    vx: number;
+    vy: number;
+    vz: number;
+    rx: number;
+    ry: number;
+    rz: number;
+  }
+  const confettiPieces: ConfettiPiece[] = [];
+  for (let i = 0; i < confettiCount; i++) {
+    const m = new THREE.Mesh(confettiGeo, confettiMats[i % confettiMats.length]);
+    confettiGroup.add(m);
+    confettiPieces.push({
+      mesh: m,
+      vx: (Math.random() - 0.5) * 3.5,
+      vy: -(1.8 + Math.random() * 2.5),
+      vz: (Math.random() - 0.5) * 3.5,
+      rx: (Math.random() - 0.5) * 8,
+      ry: (Math.random() - 0.5) * 8,
+      rz: (Math.random() - 0.5) * 8,
+    });
+  }
+
+  function resetConfettiAround(cx: number, cy: number, cz: number) {
+    confettiGroup.visible = true;
+    for (let i = 0; i < confettiPieces.length; i++) {
+      const p = confettiPieces[i];
+      p.mesh.position.set(
+        cx + (Math.random() - 0.5) * 9,
+        cy + 4 + Math.random() * 9,
+        cz + (Math.random() - 0.5) * 9
+      );
+      p.vx = (Math.random() - 0.5) * 2.8;
+      p.vy = -(1.5 + Math.random() * 2.6);
+      p.vz = (Math.random() - 0.5) * 2.8;
+    }
+  }
 
   // Upcoming 6 Reachable Box Highlight Rings
   const upcomingRings: THREE.Mesh[] = [];
@@ -385,7 +489,7 @@ export function mountBoardScene(
     upcomingRings.push(rMesh);
   }
 
-  // Active Selection Ring for Sand Trap placement
+  // Active Selection Ring for Sand Wall placement
   const hoverRing = new THREE.Mesh(
     new THREE.TorusGeometry(1.55, 0.08, 10, 24),
     new THREE.MeshBasicMaterial({ color: 0xfacc15 })
@@ -479,55 +583,82 @@ export function mountBoardScene(
     return palm;
   }
 
-  function buildSandTrapMarker(): THREE.Group {
+  function buildHazardMarker(kind: 'sand_wall' | 'quicksand'): THREE.Group {
     const g = new THREE.Group();
-    const ringGeo = new THREE.TorusGeometry(0.68, 0.08, 8, 18);
-    const ringMat = new THREE.MeshStandardMaterial({
-      color: 0xb45309,
-      emissive: 0x92400e,
-      emissiveIntensity: 0.35,
-      roughness: 0.8,
-    });
-    const spikeGeo = new THREE.ConeGeometry(0.22, 0.45, 6);
-    const spikeMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      roughness: 0.5,
-    });
-    trackDisposables.push(ringGeo, ringMat, spikeGeo, spikeMat);
+    if (kind === 'sand_wall') {
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        emissive: 0x78350f,
+        emissiveIntensity: 0.25,
+        roughness: 0.85,
+      });
+      const brickGeo = new THREE.BoxGeometry(1.55, 0.42, 0.42);
+      const topBrickGeo = new THREE.BoxGeometry(1.1, 0.32, 0.34);
+      trackDisposables.push(wallMat, brickGeo, topBrickGeo);
 
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.05;
-    g.add(ring);
+      const base = new THREE.Mesh(brickGeo, wallMat);
+      base.position.y = 0.21;
+      base.castShadow = true;
+      g.add(base);
 
-    const cone = new THREE.Mesh(spikeGeo, spikeMat);
-    cone.position.y = 0.26;
-    cone.rotation.x = Math.PI;
-    g.add(cone);
+      const top = new THREE.Mesh(topBrickGeo, wallMat);
+      top.position.y = 0.56;
+      top.castShadow = true;
+      g.add(top);
+    } else {
+      const ringGeo = new THREE.TorusGeometry(0.76, 0.09, 8, 18);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: 0xdc2626,
+        emissive: 0xb45309,
+        emissiveIntensity: 0.45,
+        roughness: 0.8,
+      });
+      const swirlGeo = new THREE.CylinderGeometry(0.68, 0.2, 0.08, 14);
+      const swirlMat = new THREE.MeshStandardMaterial({
+        color: 0x92400e,
+        roughness: 0.9,
+      });
+      trackDisposables.push(ringGeo, ringMat, swirlGeo, swirlMat);
+
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.06;
+      g.add(ring);
+
+      const swirl = new THREE.Mesh(swirlGeo, swirlMat);
+      swirl.position.y = 0.04;
+      g.add(swirl);
+    }
     return g;
   }
 
   function syncBoard(tiles: BoardTile[]) {
-    // Clear previous track meshes safely
     while (trackGroup.children.length > 0) {
       trackGroup.remove(trackGroup.children[0]);
     }
     trackDisposables.forEach((d) => d.dispose());
     trackDisposables.length = 0;
     tileMeshes.length = 0;
+    tileTopMats.length = 0;
     trapMarkers.clear();
     palmCanopies.length = 0;
     bandits.length = 0;
     blowMachines.length = 0;
     powerCrystals.length = 0;
+    desertTents.length = 0;
+    crocodileProp = null;
+    flyingParrot = null;
+    sailShip = null;
+    desertTrain = null;
     oasisWaterMesh = null;
     cachedTiles = tiles;
 
-    // 1. Inner Oasis Lagoon (Water + Inner Palms) inside the Round Circuit
+    // 1. Inner Oasis Lagoon (Water + Inner Palms + Crocodile + Sail Ship + Flying Parrot)
     const avgRadius =
       tiles.reduce((acc, t) => acc + Math.hypot(t.x, t.z), 0) /
       Math.max(1, tiles.length);
     const lagoonRadius = Math.max(6.5, avgRadius - 4.4);
+    lagoonCruiseRadius = lagoonRadius * 0.66;
 
     const beachGeo = new THREE.CylinderGeometry(lagoonRadius + 1.4, lagoonRadius + 1.7, 0.22, 32);
     const beachMat = new THREE.MeshStandardMaterial({
@@ -555,7 +686,7 @@ export function mountBoardScene(
     trackGroup.add(oasisWaterMesh);
 
     // Central sandy palm island inside the lagoon
-    const islandGeo = new THREE.CylinderGeometry(lagoonRadius * 0.34, lagoonRadius * 0.44, 0.48, 16);
+    const islandGeo = new THREE.CylinderGeometry(lagoonRadius * 0.36, lagoonRadius * 0.46, 0.48, 16);
     trackDisposables.push(islandGeo);
     const island = new THREE.Mesh(islandGeo, beachMat);
     island.position.set(0, -0.15, 0);
@@ -563,6 +694,23 @@ export function mountBoardScene(
     trackGroup.add(island);
     trackGroup.add(buildPalmTree(0.4, 0.3, 1.25));
     trackGroup.add(buildPalmTree(-1.1, -0.7, 1.0));
+
+    // Crocodile sunbathing on the middle oasis island!
+    crocodileProp = buildCrocodile((d) => trackDisposables.push(d));
+    crocodileProp.group.position.set(lagoonRadius * 0.18, 0.08, lagoonRadius * 0.2);
+    crocodileProp.group.rotation.y = 0.65;
+    crocodileProp.group.scale.setScalar(1.18);
+    trackGroup.add(crocodileProp.group);
+
+    // Sail Ship cruising in the oasis lagoon water!
+    sailShip = buildSailShip((d) => trackDisposables.push(d));
+    sailShip.group.scale.setScalar(1.05);
+    trackGroup.add(sailShip.group);
+
+    // Flying Parrot circling above the oasis!
+    flyingParrot = buildFlyingParrot((d) => trackDisposables.push(d));
+    flyingParrot.group.scale.setScalar(1.35);
+    trackGroup.add(flyingParrot.group);
 
     // Inner ring of swaying palm trees & shore boulders around the water
     const innerPalmCount = tiles.length > 35 ? 12 : 8;
@@ -594,7 +742,47 @@ export function mountBoardScene(
       }
     }
 
-    // 2. Hexagonal Track Tiles & Special Box Props (Bandit with Gun, Blow Machine, Power-Up Crystals)
+    // Desert Tents pitched around the outer perimeter of the track
+    const tentPalettes: Array<[number, number]> = [
+      [0xdc2626, 0xfef08a],
+      [0x0f766e, 0xfde047],
+      [0x7c3aed, 0xfef3c7],
+      [0xea580c, 0xfffbeb],
+      [0x2563eb, 0xfef08a],
+      [0xb91c1c, 0xfde68a],
+    ];
+    const tentCount = 6;
+    for (let t = 0; t < tentCount; t++) {
+      const a = (t / tentCount) * Math.PI * 2 + 0.45;
+      const northDist = Math.abs(Math.atan2(Math.sin(a + Math.PI / 2), Math.cos(a + Math.PI / 2)));
+      if (northDist < 0.32) continue;
+      const tr = avgRadius + 7.2;
+      const [c1, c2] = tentPalettes[t % tentPalettes.length];
+      const tent = buildDesertTent(c1, c2, (d) => trackDisposables.push(d));
+      tent.group.position.set(Math.cos(a) * tr, -0.3, Math.sin(a) * tr);
+      tent.group.rotation.y = a + Math.PI;
+      tent.group.scale.setScalar(0.95);
+      trackGroup.add(tent.group);
+      desertTents.push(tent);
+    }
+
+    // Winding Railway Track, 2 Dune Tunnels/Tubes & 3-Car Riding Train between the outer dunes!
+    desertTrain = buildDesertTrainSystem(avgRadius + 13.5, (d) =>
+      trackDisposables.push(d)
+    );
+    trackGroup.add(desertTrain.group);
+
+    // Position the 5 box lights evenly around the track radius
+    for (let i = 0; i < boxPointLights.length; i++) {
+      const a = (i / boxPointLights.length) * Math.PI * 2;
+      boxPointLights[i].position.set(
+        Math.cos(a) * avgRadius,
+        3.4,
+        Math.sin(a) * avgRadius
+      );
+    }
+
+    // 2. Hexagonal Track Tiles & Special Box Props
     const hexSideGeo = new THREE.CylinderGeometry(1.42, 1.5, 0.42, 6);
     const topDiscGeo = new THREE.CylinderGeometry(1.28, 1.28, 0.04, 6);
     const sideMat = new THREE.MeshStandardMaterial({
@@ -608,6 +796,10 @@ export function mountBoardScene(
     const powerupRimMat = new THREE.MeshStandardMaterial({
       color: 0x0d9488,
       roughness: 0.45,
+    });
+    const checkpointRimMat = new THREE.MeshStandardMaterial({
+      color: 0x1d4ed8,
+      roughness: 0.4,
     });
     const finishMat = new THREE.MeshStandardMaterial({
       color: 0x15803d,
@@ -628,10 +820,13 @@ export function mountBoardScene(
       sideMat,
       obstacleRimMat,
       powerupRimMat,
+      checkpointRimMat,
       finishMat,
       stoneMat,
       ruinMat
     );
+
+    const trackLength = Math.max(1, tiles.length - 1);
 
     tiles.forEach((tile) => {
       const baseMat =
@@ -639,6 +834,8 @@ export function mountBoardScene(
           ? obstacleRimMat
           : tile.spaceType === 'powerup'
           ? powerupRimMat
+          : tile.spaceType === 'checkpoint'
+          ? checkpointRimMat
           : tile.spaceType === 'finish' || tile.spaceType === 'start'
           ? finishMat
           : sideMat;
@@ -651,18 +848,26 @@ export function mountBoardScene(
       trackGroup.add(tileHex);
       tileMeshes.push(tileHex);
 
+      const isFinalSprint =
+        tile.index >= Math.max(1, trackLength - 10) && tile.spaceType !== 'finish';
+
       const topTex = createTileTopTexture(
         tile.index,
         tile.biome,
         tile.spaceType,
         maxAniso,
-        tile.obstacleProp
+        tile.obstacleProp,
+        isFinalSprint
       );
       const topMat = new THREE.MeshStandardMaterial({
         map: topTex,
+        emissiveMap: topTex,
+        emissive: new THREE.Color(0xffffff),
+        emissiveIntensity: TIME_PRESETS[currentTimeOfDay].boxGlow,
         roughness: 0.65,
       });
       trackDisposables.push(topTex, topMat);
+      tileTopMats.push(topMat);
 
       const topMesh = new THREE.Mesh(topDiscGeo, topMat);
       topMesh.position.set(tile.x, 0.425, tile.z);
@@ -671,13 +876,18 @@ export function mountBoardScene(
       topMesh.userData.tileIndex = tile.index;
       trackGroup.add(topMesh);
 
-      // Compute outward normal from center of circuit for placing props cleanly on the outside rim
       const outLen = Math.max(0.001, Math.hypot(tile.x, tile.z));
       const outX = tile.x / outLen;
       const outZ = tile.z / outLen;
 
-      // Special Obstacle Props: Bandit with Gun OR Wind Blow Machine aiming directly at the tile!
-      if (tile.spaceType === 'obstacle') {
+      if (tile.spaceType === 'checkpoint') {
+        const gate = buildCheckpointGate(tile.index, (d) =>
+          trackDisposables.push(d)
+        );
+        gate.position.set(tile.x, 0.42, tile.z);
+        gate.rotation.y = tile.yaw;
+        trackGroup.add(gate);
+      } else if (tile.spaceType === 'obstacle') {
         const px = tile.x + outX * 2.25;
         const pz = tile.z + outZ * 2.25;
         const faceTileYaw = Math.atan2(tile.x - px, tile.z - pz);
@@ -698,7 +908,6 @@ export function mountBoardScene(
           blowMachines.push(blower);
         }
       } else if (tile.spaceType === 'powerup') {
-        // Glowing Golden Crystal Pedestal beside Power-Up tiles
         const px = tile.x + outX * 2.15;
         const pz = tile.z + outZ * 2.15;
         const ped = buildPowerUpPedestal((d) => trackDisposables.push(d));
@@ -760,30 +969,34 @@ export function mountBoardScene(
         trackGroup.add(archGroup);
       }
 
-      // Sand Trap Visual Marker
       if (tile.sandTrapOwnerId) {
-        const marker = buildSandTrapMarker();
+        const kind = tile.hazardKind ?? 'sand_wall';
+        const marker = buildHazardMarker(kind);
         marker.position.set(tile.x, 0.44, tile.z);
+        marker.rotation.y = tile.yaw;
         trackGroup.add(marker);
-        trapMarkers.set(tile.index, marker);
+        trapMarkers.set(tile.index, { group: marker, kind });
       }
     });
   }
 
   function syncSandTraps(tiles: BoardTile[]) {
-    // Sync markers without rebuilding whole track
-    for (const [idx, grp] of trapMarkers.entries()) {
-      if (!tiles[idx]?.sandTrapOwnerId) {
-        trackGroup.remove(grp);
+    for (const [idx, entry] of trapMarkers.entries()) {
+      const t = tiles[idx];
+      const nextKind = t?.hazardKind ?? 'sand_wall';
+      if (!t?.sandTrapOwnerId || entry.kind !== nextKind) {
+        trackGroup.remove(entry.group);
         trapMarkers.delete(idx);
       }
     }
     for (const tile of tiles) {
       if (tile.sandTrapOwnerId && !trapMarkers.has(tile.index)) {
-        const marker = buildSandTrapMarker();
+        const kind = tile.hazardKind ?? 'sand_wall';
+        const marker = buildHazardMarker(kind);
         marker.position.set(tile.x, 0.44, tile.z);
+        marker.rotation.y = tile.yaw;
         trackGroup.add(marker);
-        trapMarkers.set(tile.index, marker);
+        trapMarkers.set(tile.index, { group: marker, kind });
       }
     }
   }
@@ -899,12 +1112,13 @@ export function mountBoardScene(
       const blockaded = p.blockadeTurns > 0;
       entry.isStunned = stunned || blockaded;
       entry.rig.setStatus({
-        hasShield: p.hasShield || p.mirageShield,
+        hasShield: p.hasShield,
         speedActive: p.speedBoostQueued || p.sprintActive,
         blockaded,
         stunned,
         isMoving: entry.isMoving,
       });
+      entry.rig.setNightMode(currentTimeOfDay === 'night');
     }
 
     // Highlight active player's tile & next 6 reachable boxes ahead!
@@ -930,6 +1144,8 @@ export function mountBoardScene(
               mat.color.setHex(0xf87171);
             } else if (nextTile.spaceType === 'powerup') {
               mat.color.setHex(0x2dd4bf);
+            } else if (nextTile.spaceType === 'checkpoint') {
+              mat.color.setHex(0x60a5fa);
             } else if (nextTile.spaceType === 'finish') {
               mat.color.setHex(0x4ade80);
             } else {
@@ -949,7 +1165,7 @@ export function mountBoardScene(
     }
   }
 
-  // Raycasting for Sand Trap Tile Selection
+  // Raycasting for Sand Wall Tile Selection
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let hoveredTileIdx: number | null = null;
@@ -1010,6 +1226,10 @@ export function mountBoardScene(
 
   function setTimeOfDay(tod: TimeOfDay) {
     currentTimeOfDay = tod;
+    const isNight = tod === 'night';
+    for (const entry of camelMap.values()) {
+      entry.rig.setNightMode(isNight);
+    }
   }
 
   function setTileSelectionMode(enabled: boolean) {
@@ -1017,6 +1237,23 @@ export function mountBoardScene(
     if (!enabled) {
       hoverRing.visible = false;
       canvas.style.cursor = 'default';
+    }
+  }
+
+  function setVictoryCelebration(winnerId: string | null) {
+    celebrationWinnerId = winnerId;
+    if (winnerId) {
+      const winnerEntry = camelMap.get(winnerId);
+      if (winnerEntry) {
+        resetConfettiAround(
+          winnerEntry.curPos.x,
+          winnerEntry.curPos.y,
+          winnerEntry.curPos.z
+        );
+        scriptedCamActive = true;
+      }
+    } else {
+      confettiGroup.visible = false;
     }
   }
 
@@ -1034,7 +1271,6 @@ export function mountBoardScene(
   }
   window.addEventListener('resize', onResize);
 
-  // Pre-warm shaders on GPU
   if (!isSoftwareGl) {
     renderer.compile(scene, camera);
   }
@@ -1066,8 +1302,10 @@ export function mountBoardScene(
     const dt = Math.min(0.05, clock.getDelta());
     const elapsed = clock.elapsedTime;
 
-    // 1. Smooth Day/Sunset/Night Lighting Transition
+    // 1. Smooth Day/Sunset/Night Lighting & Box Glow Transition
     const preset = TIME_PRESETS[currentTimeOfDay];
+    const isNight = currentTimeOfDay === 'night';
+
     _skyColor.setHex(preset.sky);
     (scene.background as THREE.Color).lerp(_skyColor, 1 - Math.exp(-3 * dt));
     if (scene.fog instanceof THREE.FogExp2) {
@@ -1091,6 +1329,13 @@ export function mountBoardScene(
     hemiLight.color.lerp(_hemiSky, 1 - Math.exp(-3 * dt));
     hemiLight.groundColor.lerp(_hemiGround, 1 - Math.exp(-3 * dt));
     hemiLight.intensity = THREE.MathUtils.damp(hemiLight.intensity, preset.hemiIntensity, 3, dt);
+    rimLight.intensity = THREE.MathUtils.damp(rimLight.intensity, preset.rimIntensity, 3, dt);
+    scene.environmentIntensity = THREE.MathUtils.damp(
+      scene.environmentIntensity,
+      preset.envIntensity,
+      3,
+      dt
+    );
 
     renderer.toneMappingExposure = THREE.MathUtils.damp(
       renderer.toneMappingExposure,
@@ -1104,14 +1349,56 @@ export function mountBoardScene(
       Math.max(12, preset.sunPos[1] * 1.4),
       preset.sunPos[2] * 2.2
     );
-    celestialMat.color.setHex(currentTimeOfDay === 'night' ? 0xe0f2fe : 0xfef08a);
+    celestialMat.color.setHex(isNight ? 0xe0f2fe : 0xfef08a);
 
-    // 2. Palm Tree Gentle Sway, Sand Trap Spin, Bandits, Blow Machines & Power-Up Crystals
+    // Boxes emit light & lighten camels at night
+    for (let i = 0; i < tileTopMats.length; i++) {
+      tileTopMats[i].emissiveIntensity = THREE.MathUtils.damp(
+        tileTopMats[i].emissiveIntensity,
+        preset.boxGlow,
+        3.5,
+        dt
+      );
+    }
+    for (let i = 0; i < boxPointLights.length; i++) {
+      boxPointLights[i].intensity = THREE.MathUtils.damp(
+        boxPointLights[i].intensity,
+        preset.boxLightIntensity,
+        3.5,
+        dt
+      );
+    }
+
+    // Active camel right-back lantern light follows active camel
+    const lampEntry = currentActivePlayerId
+      ? camelMap.get(currentActivePlayerId)
+      : undefined;
+    if (lampEntry) {
+      const rightOffX = -Math.cos(lampEntry.curYaw) * 0.5;
+      const rightOffZ = Math.sin(lampEntry.curYaw) * 0.5;
+      camelLampLight.position.set(
+        lampEntry.curPos.x + rightOffX,
+        lampEntry.curPos.y + 1.15,
+        lampEntry.curPos.z + rightOffZ
+      );
+      camelLampLight.intensity = THREE.MathUtils.damp(
+        camelLampLight.intensity,
+        isNight ? 3.8 : currentTimeOfDay === 'sunset' ? 1.1 : 0,
+        4,
+        dt
+      );
+    } else {
+      camelLampLight.intensity = THREE.MathUtils.damp(camelLampLight.intensity, 0, 4, dt);
+    }
+
+    // 2. Palm Tree Gentle Sway, Hazards, Bandits, Blowers, Crystals, Crocodile, Parrot, Ship, Tents & Train
     for (let i = 0; i < palmCanopies.length; i++) {
       palmCanopies[i].rotation.z = Math.sin(elapsed * 1.4 + i) * 0.05;
     }
     for (const marker of trapMarkers.values()) {
-      marker.rotation.y = elapsed * 2.5;
+      if (marker.kind === 'quicksand') {
+        marker.group.rotation.y = elapsed * 2.6;
+      }
     }
     for (let i = 0; i < bandits.length; i++) {
       const b = bandits[i];
@@ -1122,7 +1409,7 @@ export function mountBoardScene(
       const bm = blowMachines[i];
       bm.fanRotor.rotation.z = elapsed * 10;
       for (const wr of bm.windRings) {
-        const phase = ((elapsed * 1.4 + (wr.userData.phase as number)) % 1);
+        const phase = (elapsed * 1.4 + (wr.userData.phase as number)) % 1;
         wr.position.z = 0.85 + phase * 1.5;
         wr.scale.setScalar(0.85 + phase * 0.8);
       }
@@ -1142,6 +1429,68 @@ export function mountBoardScene(
       dt
     );
 
+    // Crocodile tail wiggle & gentle jaw snap
+    if (crocodileProp) {
+      crocodileProp.tailPivot.rotation.y = Math.sin(elapsed * 2.1) * 0.25;
+      crocodileProp.jawPivot.rotation.x = Math.max(0, Math.sin(elapsed * 0.9)) * 0.24;
+    }
+
+    // Flying Parrot circling & flapping wings above the oasis
+    if (flyingParrot) {
+      const pa = elapsed * 0.42;
+      const pr = lagoonCruiseRadius * 0.72;
+      const px = Math.cos(pa) * pr;
+      const pz = Math.sin(pa) * pr;
+      flyingParrot.group.position.set(px, 6.8 + Math.sin(elapsed * 1.8) * 0.65, pz);
+      flyingParrot.group.rotation.y = -pa;
+      flyingParrot.group.rotation.z = 0.22;
+      const flap = Math.sin(elapsed * 12) * 0.72;
+      flyingParrot.wingL.rotation.z = flap;
+      flyingParrot.wingR.rotation.z = -flap;
+    }
+
+    // Sail Ship gliding around the inner oasis water
+    if (sailShip) {
+      const sa = -elapsed * 0.16;
+      const sr = lagoonCruiseRadius;
+      sailShip.group.position.set(
+        Math.cos(sa) * sr,
+        -0.12 + Math.sin(elapsed * 2.1) * 0.03,
+        Math.sin(sa) * sr
+      );
+      sailShip.group.rotation.y = -sa + Math.PI;
+      sailShip.group.rotation.z = Math.sin(elapsed * 1.9) * 0.05;
+      sailShip.lanternMat.emissiveIntensity = isNight ? 2.4 : 0.35;
+    }
+
+    // Desert Tents camp lanterns glow warmly at night
+    const tentGlow = isNight ? 2.2 : currentTimeOfDay === 'sunset' ? 1.1 : 0.25;
+    for (let i = 0; i < desertTents.length; i++) {
+      desertTents[i].lanternMat.emissiveIntensity = tentGlow;
+    }
+
+    // Desert Express Train riding smoothly between dunes & through tunnels
+    if (desertTrain) {
+      const baseU = (elapsed * 0.022) % 1;
+      const carSpacing = 0.0155;
+      for (let c = 0; c < desertTrain.cars.length; c++) {
+        const u = (baseU - c * carSpacing + 1) % 1;
+        desertTrain.curve.getPointAt(u, _trainPos);
+        desertTrain.curve.getTangentAt(u, _trainTan);
+        const car = desertTrain.cars[c];
+        car.position.copy(_trainPos);
+        car.rotation.y = Math.atan2(_trainTan.x, _trainTan.z);
+      }
+      desertTrain.headlightMat.emissiveIntensity = isNight ? 2.6 : 0.6;
+      desertTrain.windowMat.emissiveIntensity = isNight ? 2.0 : 0.4;
+      for (let s = 0; s < desertTrain.smokePuffs.length; s++) {
+        const puff = desertTrain.smokePuffs[s];
+        const phase = (elapsed * 0.85 + (puff.userData.phase as number)) % 1;
+        puff.position.set(0, 1.85 + phase * 1.9, 0.78 - phase * 1.4);
+        puff.scale.setScalar(0.75 + phase * 1.45);
+      }
+    }
+
     // 3. Wind-blown Sand Particles
     if (sandstormBurstTimer > 0) {
       sandstormBurstTimer = Math.max(0, sandstormBurstTimer - dt);
@@ -1155,14 +1504,14 @@ export function mountBoardScene(
     }
     sandGeo.attributes.position.needsUpdate = true;
 
-    // 4. Camel Hop Interpolation & Animations
-    for (const entry of camelMap.values()) {
+    // 4. Slower Camel Hop Interpolation & Victory Dance Animations
+    for (const [playerId, entry] of camelMap.entries()) {
       const dist = entry.curPos.distanceTo(entry.targetPos);
       if (dist > 0.02) {
-        entry.curPos.x = THREE.MathUtils.damp(entry.curPos.x, entry.targetPos.x, 8.5, dt);
-        entry.curPos.z = THREE.MathUtils.damp(entry.curPos.z, entry.targetPos.z, 8.5, dt);
-        entry.curPos.y = THREE.MathUtils.damp(entry.curPos.y, entry.targetPos.y, 10, dt);
-        const hopLift = Math.sin(Math.min(1, dist * 0.5) * Math.PI) * 0.75;
+        entry.curPos.x = THREE.MathUtils.damp(entry.curPos.x, entry.targetPos.x, 4.4, dt);
+        entry.curPos.z = THREE.MathUtils.damp(entry.curPos.z, entry.targetPos.z, 4.4, dt);
+        entry.curPos.y = THREE.MathUtils.damp(entry.curPos.y, entry.targetPos.y, 5.5, dt);
+        const hopLift = Math.sin(Math.min(1, dist * 0.48) * Math.PI) * 0.88;
         entry.rig.root.position.set(entry.curPos.x, entry.curPos.y + hopLift, entry.curPos.z);
         entry.shadow.position.set(entry.curPos.x, 0.435, entry.curPos.z);
         entry.isMoving = true;
@@ -1173,22 +1522,58 @@ export function mountBoardScene(
         entry.isMoving = false;
       }
 
-      // Smooth yaw alignment
       let diff = entry.targetYaw - entry.curYaw;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      entry.curYaw += diff * (1 - Math.exp(-8 * dt));
+      entry.curYaw += diff * (1 - Math.exp(-5.5 * dt));
       entry.rig.root.rotation.y = entry.curYaw;
 
-      entry.rig.animate(elapsed, entry.isMoving, entry.isStunned);
+      const isCelebrating = celebrationWinnerId === playerId;
+      entry.rig.animate(elapsed, entry.isMoving, entry.isStunned, isCelebrating);
     }
 
-    // 5. Smooth Camera Tracking Presets
+    // 4b. Winner Celebration Falling 3D Confetti
+    if (celebrationWinnerId && confettiGroup.visible) {
+      const winnerEntry = camelMap.get(celebrationWinnerId);
+      const wx = winnerEntry ? winnerEntry.curPos.x : 0;
+      const wy = winnerEntry ? winnerEntry.curPos.y : 1;
+      const wz = winnerEntry ? winnerEntry.curPos.z : 0;
+      for (let i = 0; i < confettiPieces.length; i++) {
+        const p = confettiPieces[i];
+        p.mesh.position.x += (p.vx + Math.sin(elapsed * 3 + i) * 0.9) * dt;
+        p.mesh.position.y += p.vy * dt;
+        p.mesh.position.z += (p.vz + Math.cos(elapsed * 2.5 + i) * 0.9) * dt;
+        p.mesh.rotation.x += p.rx * dt;
+        p.mesh.rotation.y += p.ry * dt;
+        p.mesh.rotation.z += p.rz * dt;
+        if (p.mesh.position.y < 0.4) {
+          p.mesh.position.set(
+            wx + (Math.random() - 0.5) * 9,
+            wy + 8 + Math.random() * 5,
+            wz + (Math.random() - 0.5) * 9
+          );
+        }
+      }
+    }
+
+    // 5. More Zoomed-Out Smooth Camera Tracking Presets
     if (scriptedCamActive && cachedTiles.length > 0) {
-      if (currentCameraMode === 'overview') {
-        _targetLook.set(0, 1.5, -14);
-        const span = cachedTiles.length > 35 ? 46 : 33;
-        _targetCamPos.set(0, span * 0.64, span * 1.15);
+      const celebEntry = celebrationWinnerId
+        ? camelMap.get(celebrationWinnerId)
+        : undefined;
+      if (celebEntry) {
+        _v1.copy(celebEntry.curPos);
+        const orbitA = elapsed * 0.35;
+        _targetLook.set(_v1.x, _v1.y + 1.4, _v1.z);
+        _targetCamPos.set(
+          _v1.x + Math.cos(orbitA) * 11.5,
+          _v1.y + 6.5,
+          _v1.z + Math.sin(orbitA) * 11.5
+        );
+      } else if (currentCameraMode === 'overview') {
+        _targetLook.set(0, 1.0, -8);
+        const span = cachedTiles.length > 35 ? 62 : 45;
+        _targetCamPos.set(0, span * 0.72, span * 1.28);
       } else if (currentCameraMode === 'follow' && currentActivePlayerId) {
         const activeEntry = camelMap.get(currentActivePlayerId);
         if (activeEntry) {
@@ -1198,11 +1583,11 @@ export function mountBoardScene(
           const rLen = Math.max(0.001, Math.hypot(_v1.x, _v1.z));
           const outX = _v1.x / rLen;
           const outZ = _v1.z / rLen;
-          _targetLook.set(_v1.x + fwdX * 2.5, _v1.y + 0.85, _v1.z + fwdZ * 2.5);
+          _targetLook.set(_v1.x + fwdX * 3.0, _v1.y + 0.9, _v1.z + fwdZ * 3.0);
           _targetCamPos.set(
-            _v1.x - fwdX * 10.5 + outX * 4.2,
-            _v1.y + 9.5,
-            _v1.z - fwdZ * 10.5 + outZ * 4.2
+            _v1.x - fwdX * 18.5 + outX * 8.5,
+            _v1.y + 15.0,
+            _v1.z - fwdZ * 18.5 + outZ * 8.5
           );
         }
       } else if (currentCameraMode === 'leader' && currentPlayersSnapshot.length > 0) {
@@ -1213,12 +1598,12 @@ export function mountBoardScene(
         if (leaderEntry) {
           _v2.copy(leaderEntry.curPos);
           _targetLook.set(_v2.x, _v2.y + 0.8, _v2.z);
-          _targetCamPos.set(_v2.x + 8, _v2.y + 10, _v2.z + 12);
+          _targetCamPos.set(_v2.x + 14, _v2.y + 15.5, _v2.z + 18);
         }
       }
 
-      camera.position.lerp(_targetCamPos, 1 - Math.exp(-4.5 * dt));
-      controls.target.lerp(_targetLook, 1 - Math.exp(-5.5 * dt));
+      camera.position.lerp(_targetCamPos, 1 - Math.exp(-3.8 * dt));
+      controls.target.lerp(_targetLook, 1 - Math.exp(-4.8 * dt));
     }
 
     if (tileSelectionEnabled && hoveredTileIdx !== null) {
@@ -1245,6 +1630,7 @@ export function mountBoardScene(
     },
     setTimeOfDay,
     setTileSelectionMode,
+    setVictoryCelebration,
     triggerSandstormVisual,
     dispose() {
       disposed = true;
@@ -1261,6 +1647,8 @@ export function mountBoardScene(
       }
       trackDisposables.forEach((d) => d.dispose());
       distantCityDisposables.forEach((d) => d.dispose());
+      confettiGeo.dispose();
+      confettiMats.forEach((m) => m.dispose());
       duneSphereGeo.dispose();
       boulderGeo.dispose();
       mesaMat.dispose();

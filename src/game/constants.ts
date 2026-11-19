@@ -116,7 +116,7 @@ export const MODE_CONFIGS: Record<
     subtitle: '30 vakjes · Snel spel (10-15 min)',
     trackLength: 30,
     duration: '10-15 min',
-    highlights: ['Goed voor kinderen', 'Veel directe actie', 'Snelle finishes'],
+    highlights: ['Goed voor kinderen', 'Veel directe actie', 'Checkpoints 10 & 20'],
   },
   standaard: {
     title: 'Standaard Race (Aanrader)',
@@ -124,9 +124,9 @@ export const MODE_CONFIGS: Record<
     trackLength: 50,
     duration: '20-30 min',
     highlights: [
-      'Genoeg ruimte voor obstakels en power-ups',
-      'Combacks mogelijk na pech',
-      'Volledige kamelen-stapels',
+      'Checkpoints 10, 20, 30, 40',
+      'Final Sprint vanaf vakje 40',
+      'Kamelen stapelen & Stamina',
     ],
   },
 };
@@ -135,7 +135,6 @@ export interface PowerUpMeta {
   id: PowerUpType;
   name: string;
   shortDesc: string;
-  timing: 'pre_roll' | 'passive_or_save' | 'instant_or_save';
   accentColor: string;
 }
 
@@ -143,54 +142,48 @@ export const POWER_UP_META: Record<PowerUpType, PowerUpMeta> = {
   speed_boost: {
     id: 'speed_boost',
     name: 'Speed Boost',
-    shortDesc: '+4 movement on your roll',
-    timing: 'instant_or_save',
+    shortDesc: '+4 steps (+6 in Final Sprint Zone!)',
     accentColor: '#F97316',
+  },
+  turbo_sprint: {
+    id: 'turbo_sprint',
+    name: 'Turbo Sprint',
+    shortDesc: 'Double your next Movement Die roll',
+    accentColor: '#22C55E',
   },
   shield: {
     id: 'shield',
     name: 'Shield',
-    shortDesc: 'Blocks 1 Kick or Obstacle effect',
-    timing: 'passive_or_save',
+    shortDesc: 'Blocks 1 Obstacle or Kick effect',
     accentColor: '#38BDF8',
   },
-  sand_trap: {
-    id: 'sand_trap',
-    name: 'Sand Trap',
-    shortDesc: 'Place on any space; next camel loses 1 turn',
-    timing: 'pre_roll',
+  sand_wall: {
+    id: 'sand_wall',
+    name: 'Sand Wall',
+    shortDesc: 'Place on an empty space; rivals must stop there!',
     accentColor: '#EAB308',
   },
-  blockade: {
-    id: 'blockade',
-    name: 'Blockade',
-    shortDesc: 'Target a rival; cannot move for 2 turns',
-    timing: 'pre_roll',
+  block: {
+    id: 'block',
+    name: 'Block',
+    shortDesc: 'Target a rival; they lose 2 turns',
     accentColor: '#EF4444',
   },
-  sprint_potion: {
-    id: 'sprint_potion',
-    name: 'Sprint Potion',
-    shortDesc: 'Double your next Movement Die roll',
-    timing: 'pre_roll',
-    accentColor: '#22C55E',
-  },
-  oasis_refresh: {
-    id: 'oasis_refresh',
-    name: 'Oasis Refresh',
-    shortDesc: 'Take another turn immediately',
-    timing: 'pre_roll',
-    accentColor: '#14B8A6',
+  swap: {
+    id: 'swap',
+    name: 'Swap',
+    shortDesc: 'Swap positions with the camel directly ahead of you!',
+    accentColor: '#A855F7',
   },
 };
 
 export const ALL_POWER_UPS: PowerUpType[] = [
   'speed_boost',
+  'turbo_sprint',
   'shield',
-  'sand_trap',
-  'blockade',
-  'sprint_potion',
-  'oasis_refresh',
+  'sand_wall',
+  'block',
+  'swap',
 ];
 
 export const ACTION_DIE_FACES: Record<
@@ -198,8 +191,8 @@ export const ACTION_DIE_FACES: Record<
   { face: ActionDieFace; label: string; desc: string }
 > = {
   1: { face: 'none', label: 'Steady Trot', desc: 'No special action this turn.' },
-  2: { face: 'obstacle', label: 'Obstacle!', desc: 'Roll the Obstacle Die!' },
-  3: { face: 'powerup', label: 'Power-Up!', desc: 'Draw a random Power-Up token!' },
+  2: { face: 'obstacle', label: 'Obstacle!', desc: 'Draw a hidden Obstacle Card!' },
+  3: { face: 'powerup', label: 'Power-Up!', desc: 'Draw a random Power-Up Card!' },
   4: {
     face: 'pass_player',
     label: 'Pass Player',
@@ -223,23 +216,28 @@ export const DESERT_EVENTS: Record<
 > = {
   sandstorm: {
     title: 'Sandstorm!',
-    desc: 'Fierce desert gusts blow all camels back 2 spaces.',
+    desc: 'Everyone is blown back 2 spaces (never past your Checkpoint).',
     color: '#F59E0B',
   },
   tailwind: {
     title: 'Tailwind!',
-    desc: 'Warm desert breeze pushes every camel forward 1 space.',
+    desc: 'Strong desert winds push every camel forward 2 spaces!',
     color: '#38BDF8',
   },
-  mirage: {
-    title: 'Mirage!',
-    desc: 'Shimmering oasis illusion — everyone ignores their next obstacle!',
+  camel_stampede: {
+    title: 'Camel Stampede!',
+    desc: 'The last-place camel charges forward +4 spaces!',
+    color: '#22C55E',
+  },
+  oasis_festival: {
+    title: 'Oasis Festival!',
+    desc: 'Celebration at the oasis — every camel receives a Power-Up!',
     color: '#A855F7',
   },
-  water_stop: {
-    title: 'Water Stop!',
-    desc: 'Refreshing desert spring — every camel gains a Shield!',
-    color: '#22C55E',
+  quicksand: {
+    title: 'Quicksand!',
+    desc: 'The mid-track space turns into dangerous quicksand!',
+    color: '#EF4444',
   },
 };
 
@@ -256,9 +254,9 @@ const BIOME_POOL: TileBiome[] = [
 
 /**
  * Generates a randomized round/oval 3D hexagonal race circuit around a central oasis lagoon.
- * Start (0) and Finish (trackLength) meet near the front Finish Gate.
- * Obstacle spaces are strictly at 3, 7, 11, 15, ... alternating between Bandit & Blow Machine props.
- * Power-up spaces are strictly at 4, 8, 12, 16, ...
+ * Checkpoints at 10, 20, 30, 40...
+ * Obstacles at 3, 7, 11, 15, ...
+ * Power-Ups at 4, 8, 12, 16, ...
  */
 export function generateRandomizedTrack(trackLength: number): BoardTile[] {
   const tiles: BoardTile[] = [];
@@ -266,13 +264,11 @@ export function generateRandomizedTrack(trackLength: number): BoardTile[] {
   const arcSpacing = 3.08;
   const baseRadius = (totalCount * arcSpacing) / (Math.PI * 2);
 
-  // Randomized organic oval harmonics so every race circuit feels unique yet stays round
   const ovalAspect = 1.16 + Math.random() * 0.14;
   const wobbleAmp = baseRadius * (0.045 + Math.random() * 0.04);
   const wobbleFreq = Math.random() > 0.5 ? 3 : 4;
   const wobblePhase = Math.random() * Math.PI * 2;
 
-  // Create random biome segments of 3-6 tiles around the circuit
   const biomes: TileBiome[] = [];
   let currentBiome: TileBiome = 'desert';
   let remainingInBiome = 3;
@@ -294,7 +290,6 @@ export function generateRandomizedTrack(trackLength: number): BoardTile[] {
     remainingInBiome--;
   }
 
-  // Place tiles around the closed loop starting at bottom-front (theta = PI / 2), moving clockwise
   const rawPoints: Array<{ x: number; z: number }> = [];
   const arcSpan = Math.PI * 2 * (trackLength / (trackLength + 1.1));
   for (let i = 0; i <= trackLength; i++) {
@@ -317,10 +312,13 @@ export function generateRandomizedTrack(trackLength: number): BoardTile[] {
     let obstacleProp: 'bandit' | 'blow_machine' | undefined;
     if (i === 0) spaceType = 'start';
     else if (i === trackLength) spaceType = 'finish';
+    else if (i % 10 === 0) spaceType = 'checkpoint';
     else if (i % 4 === 3) {
       spaceType = 'obstacle';
       obstacleProp = i % 8 === 3 ? 'bandit' : 'blow_machine';
-    } else if (i % 4 === 0) spaceType = 'powerup';
+    } else if (i % 4 === 0) {
+      spaceType = 'powerup';
+    }
 
     tiles.push({
       index: i,
@@ -331,6 +329,7 @@ export function generateRandomizedTrack(trackLength: number): BoardTile[] {
       z: p.z,
       yaw,
       sandTrapOwnerId: null,
+      hazardKind: null,
     });
   }
 

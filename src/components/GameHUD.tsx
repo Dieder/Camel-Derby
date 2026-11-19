@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
+  BatteryCharging,
   BookOpen,
   ChevronDown,
   ChevronUp,
   Dices,
   Eye,
+  Flag,
   Moon,
   RotateCcw,
   Shield,
@@ -19,7 +21,6 @@ import {
   Zap,
 } from 'lucide-react';
 import {
-  ACTION_DIE_FACES,
   CAMEL_PALETTES,
   DESERT_EVENTS,
   POWER_UP_META,
@@ -27,6 +28,7 @@ import {
 import {
   getChampionshipStandings,
   getStandingsSorted,
+  isInFinalSprintZone,
 } from '../game/engine';
 import {
   CamelColor,
@@ -35,6 +37,8 @@ import {
   PowerUpType,
   TimeOfDay,
 } from '../game/types';
+import { RulesModal } from './RulesModal';
+import { VisualDice } from './VisualDice';
 
 export interface RollMessageData {
   id: number;
@@ -56,10 +60,11 @@ interface GameHUDProps {
   onChangeTimeOfDay: (tod: TimeOfDay) => void;
   onToggleMute: () => void;
   onRollDice: () => void;
+  onSpendStaminaPlusOne: () => void;
   onUsePowerUp: (p: PowerUpType) => void;
   onResolvePassChoice: (choice: 'vault' | 'stack') => void;
   onResolveKick: (targetId: string, mode: 'push' | 'stun') => void;
-  onSelectBlockadeTarget: (targetId: string) => void;
+  onSelectBlockTarget: (targetId: string) => void;
   onCancelTargetMode: () => void;
   onResolveObstacle: () => void;
   onDismissEvent: () => void;
@@ -79,10 +84,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onChangeTimeOfDay,
   onToggleMute,
   onRollDice,
+  onSpendStaminaPlusOne,
   onUsePowerUp,
   onResolvePassChoice,
   onResolveKick,
-  onSelectBlockadeTarget,
+  onSelectBlockTarget,
   onCancelTargetMode,
   onResolveObstacle,
   onDismissEvent,
@@ -94,8 +100,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   const currentPlayer = state.players[state.currentPlayerIndex];
   const standings = getStandingsSorted(state.players);
-  const isHumanTurn =
-    currentPlayer && !currentPlayer.isAI && state.phase === 'awaiting_roll';
+  const isHumanRollReady =
+    Boolean(currentPlayer && !currentPlayer.isAI && state.phase === 'awaiting_roll');
 
   const nextTimeOfDay = (): TimeOfDay => {
     if (timeOfDay === 'day') return 'sunset';
@@ -105,31 +111,43 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4">
-      {/* Top-Center Post-Roll Action & Outcome Message */}
+      {/* Top-Center Post-Roll Dice & Outcome Toast */}
       {rollMessage && (
-        <div className="pointer-events-none fixed top-4 left-1/2 -translate-x-1/2 z-20 w-[min(460px,90vw)] rounded-xl bg-stone-950/95 border border-amber-400/70 px-4 py-2.5 shadow-2xl">
-          <div className="flex items-center gap-2">
-            <span
-              className="w-3 h-3 rounded-full shrink-0 border border-white/40"
-              style={{
-                backgroundColor: CAMEL_PALETTES[rollMessage.playerColor].primary,
-              }}
+        <div className="pointer-events-none fixed top-4 left-1/2 -translate-x-1/2 z-20 w-[min(520px,92vw)] rounded-xl bg-stone-950/95 border border-amber-400/70 px-4 py-2.5 shadow-2xl flex items-center gap-3.5">
+          {state.lastRoll && (
+            <VisualDice
+              movementDie={state.lastRoll.movementDie}
+              actionDieNumber={state.lastRoll.actionDieNumber}
+              actionDie={state.lastRoll.actionDie}
+              rollNonce={state.lastRoll.rollNonce}
+              compact
             />
-            <span className="font-display font-bold text-sm text-white">
-              {rollMessage.playerName}
-            </span>
-            <span className="text-xs font-semibold text-amber-300">
-              · {rollMessage.headline}
-            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span
+                className="w-3 h-3 rounded-full shrink-0 border border-white/40"
+                style={{
+                  backgroundColor: CAMEL_PALETTES[rollMessage.playerColor].primary,
+                }}
+              />
+              <span className="font-display font-bold text-sm text-white truncate">
+                {rollMessage.playerName}
+              </span>
+              <span className="text-xs font-semibold text-amber-300 truncate">
+                · {rollMessage.headline}
+              </span>
+            </div>
+            <p className="text-xs text-stone-200 mt-0.5 line-clamp-2">
+              {rollMessage.detail}
+            </p>
           </div>
-          <p className="text-xs text-stone-200 mt-0.5">{rollMessage.detail}</p>
         </div>
       )}
 
-      {/* Top Row: Left Minimal Header & Right Standings */}
+      {/* Top Row: Left Header & Right Standings */}
       <div className="flex items-start justify-between gap-4">
-        {/* Top-Left Title & Race Info */}
-        <div className="pointer-events-auto rounded-xl bg-stone-950/90 border border-stone-800 px-4 py-3 shadow-lg max-w-md">
+        <div className="pointer-events-auto rounded-xl bg-stone-950/92 border border-stone-800 px-4 py-3 shadow-lg max-w-md">
           <div className="flex items-center justify-between gap-4">
             <h1 className="font-display font-bold text-base text-white whitespace-nowrap">
               Camel Dash: Desert Derby
@@ -172,10 +190,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
 
         {/* Top-Right Compact Standings */}
-        <div className="pointer-events-auto rounded-xl bg-stone-950/90 border border-stone-800 px-3.5 py-2.5 shadow-lg min-w-[230px] max-w-xs hidden sm:block">
+        <div className="pointer-events-auto rounded-xl bg-stone-950/92 border border-stone-800 px-3.5 py-2.5 shadow-lg min-w-[250px] max-w-xs hidden sm:block">
           <div className="flex items-center justify-between text-xs font-semibold text-stone-400 mb-1.5">
             <span>Race Order</span>
-            {state.format === 'championship' && <span>Cup Pts</span>}
+            <span>{state.format === 'championship' ? 'Tile · Pts' : 'Tile · CP'}</span>
           </div>
           <div className="flex flex-col gap-1">
             {standings.map((p, idx) => {
@@ -187,6 +205,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   other.position === p.position &&
                   other.finishedRank === null
               ).length;
+              const inFinal =
+                p.finishedRank === null &&
+                isInFinalSprintZone(p.position, state.trackLength);
               return (
                 <div
                   key={p.id}
@@ -206,6 +227,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     {p.hasShield && (
                       <Shield className="w-3 h-3 text-sky-400 shrink-0" />
                     )}
+                    {inFinal && (
+                      <Flag className="w-3 h-3 text-orange-400 shrink-0" />
+                    )}
                     {stackCount > 1 && p.stackOrder > 0 && (
                       <span className="text-[11px] text-amber-300 shrink-0">
                         ↑{p.stackOrder + 1}
@@ -213,14 +237,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     )}
                   </div>
                   <div className="flex items-center gap-2 font-mono tabular-nums shrink-0">
-                    <span className="text-stone-400">
+                    <span className="text-stone-300">
                       {p.finishedRank
                         ? `#${p.finishedRank}`
                         : `${p.position}/${state.trackLength}`}
                     </span>
-                    {state.format === 'championship' && (
-                      <span className="text-amber-300 w-6 text-right">
+                    {state.format === 'championship' ? (
+                      <span className="text-amber-300 w-7 text-right">
                         {p.points}
+                      </span>
+                    ) : (
+                      <span className="text-sky-400/90 w-7 text-right text-[11px]">
+                        C{p.checkpoint}
                       </span>
                     )}
                   </div>
@@ -231,11 +259,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       </div>
 
-      {/* Sand Trap Placement Helper Banner */}
-      {state.phase === 'sand_trap_target' && (
+      {/* Sand Wall Placement Helper Banner */}
+      {state.phase === 'sand_wall_target' && (
         <div className="pointer-events-auto self-center rounded-xl bg-stone-950/95 border border-amber-400 px-5 py-3 shadow-xl flex items-center gap-4">
           <span className="text-sm font-medium text-amber-200">
-            Click any 3D board tile (1–{state.trackLength - 1}) to bury your Sand Trap!
+            Click any 3D board tile (1–{state.trackLength - 1}) to place your Sand Wall!
           </span>
           <button
             type="button"
@@ -247,7 +275,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
-      {/* Center Modals for Tactical Decisions, Obstacles, Events, Race Finish */}
+      {/* Center Modals for Decisions, Obstacles, Events, Race Finish */}
       {state.phase === 'pass_choice' && state.pendingPass && (
         <div className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-stone-950/60 p-4">
           <div className="w-full max-w-md rounded-2xl bg-stone-950 border border-amber-400/50 p-6 shadow-2xl text-stone-100">
@@ -351,24 +379,24 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
-      {state.phase === 'blockade_target' && (
+      {state.phase === 'block_target' && (
         <div className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-stone-950/60 p-4">
           <div className="w-full max-w-md rounded-2xl bg-stone-950 border border-amber-400/50 p-6 shadow-2xl text-stone-100">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-xl font-bold text-white">
-                Deploy Blockade
+                Play Block Card
               </h2>
               <button
                 type="button"
                 onClick={onCancelTargetMode}
                 className="text-stone-400 hover:text-white cursor-pointer"
-                aria-label="Cancel blockade"
+                aria-label="Cancel block"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
             <p className="text-sm text-stone-300 mt-1.5">
-              Select a rival camel — they cannot move for 2 turns!
+              Select a rival camel — they lose 2 turns!
             </p>
             <div className="flex flex-col gap-2 mt-4">
               {state.players
@@ -381,7 +409,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     <button
                       key={rival.id}
                       type="button"
-                      onClick={() => onSelectBlockadeTarget(rival.id)}
+                      onClick={() => onSelectBlockTarget(rival.id)}
                       className="flex items-center justify-between p-3 rounded-xl bg-stone-900 hover:bg-stone-800 border border-stone-700 text-sm cursor-pointer"
                     >
                       <div className="flex items-center gap-2.5">
@@ -409,21 +437,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <div className="w-full max-w-sm rounded-2xl bg-stone-950 border border-red-400/60 p-6 shadow-2xl text-center text-stone-100">
             <p className="text-xs font-medium text-red-400">
               {state.pendingObstacle.source === 'action_die'
-                ? 'Action Die Triggered Obstacle'
+                ? 'Action Die Triggered Hidden Obstacle'
                 : 'Landed on Obstacle Space'}
             </p>
             <h2 className="font-display text-2xl font-extrabold text-white mt-1">
-              Obstacle Die: {state.pendingObstacle.roll}
+              Obstacle Card #{state.pendingObstacle.roll}
             </h2>
+            {state.pendingObstacle.inFinalSprint && (
+              <p className="text-xs font-semibold text-orange-300 mt-1">
+                Final Sprint Zone Active!
+              </p>
+            )}
             <p className="text-base font-semibold text-amber-300 mt-3">
               {state.pendingObstacle.outcome === 'back_2' &&
-                'Return 2 spaces back!'}
+                `Return ${state.pendingObstacle.inFinalSprint ? '4' : '2'} spaces back!`}
               {state.pendingObstacle.outcome === 'back_3' &&
                 'Return 3 spaces back!'}
-              {state.pendingObstacle.outcome === 'lose_turn' &&
-                'Stuck in quicksand — Lose next turn!'}
-              {state.pendingObstacle.outcome === 'back_start' &&
-                'Sandslide! Return all the way to Start!'}
+              {state.pendingObstacle.outcome === 'lose_1' &&
+                'Snared in sand — Lose 1 turn!'}
+              {state.pendingObstacle.outcome === 'lose_2' &&
+                'Trapped in canyon — Lose 2 turns!'}
+              {state.pendingObstacle.outcome === 'back_checkpoint' &&
+                'Sandslide! Return to your last Checkpoint!'}
+              {state.pendingObstacle.outcome === 'sandstorm_all' &&
+                'Sandstorm! Every camel drops 1 space!'}
             </p>
             <button
               type="button"
@@ -443,7 +480,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <Wind className="w-6 h-6" />
             </div>
             <p className="text-xs font-medium text-amber-400">
-              End of Round {state.pendingEvent.round - 1} · Desert Event Die
+              End of Round {state.pendingEvent.round - 1} · Desert Event
             </p>
             <h2 className="font-display text-2xl font-extrabold text-white mt-1">
               {DESERT_EVENTS[state.pendingEvent.event].title}
@@ -463,8 +500,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       )}
 
       {(state.phase === 'race_over' || state.phase === 'match_over') && (
-        <div className="pointer-events-auto fixed inset-0 z-30 flex items-center justify-center bg-stone-950/75 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-stone-950 border border-amber-400/50 p-6 md:p-7 shadow-2xl text-stone-100">
+        <div className="pointer-events-auto fixed inset-0 z-30 flex items-end sm:items-center justify-center bg-stone-950/35 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-stone-950/94 border border-amber-400/60 p-6 shadow-2xl text-stone-100">
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-xl bg-amber-400/20 flex items-center justify-center text-amber-300 shrink-0">
                 <Trophy className="w-6 h-6" />
@@ -549,57 +586,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       )}
 
       {/* Rules Modal */}
-      {showRules && (
-        <div className="pointer-events-auto fixed inset-0 z-40 flex items-center justify-center bg-stone-950/75 p-4">
-          <div className="w-full max-w-xl rounded-2xl bg-stone-950 border border-stone-700 p-6 shadow-2xl text-stone-200 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
-              <h2 className="font-display text-xl font-bold text-white">
-                Desert Derby Rules
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowRules(false)}
-                className="text-stone-400 hover:text-white cursor-pointer"
-                aria-label="Close rules"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="space-y-3 text-xs md:text-sm leading-relaxed mt-4">
-              <p>
-                <strong className="text-amber-300">Camel Stacking:</strong> Land
-                on the exact space of another camel to stack on top! Whenever a
-                lower camel moves, all camels riding on top move along with it.
-              </p>
-              <p>
-                <strong className="text-amber-300">Dual Dice:</strong> Roll the
-                Movement Die (1–6) and the Action Die (1 Steady · 2 Obstacle · 3
-                Power-Up · 4 Pass Player · 5 No Passing · 6 Kick Player).
-              </p>
-              <p>
-                <strong className="text-amber-300">Special Spaces:</strong>{' '}
-                Tiles 3, 7, 11… trigger the Obstacle Die. Tiles 4, 8, 12… grant
-                a Power-Up token.
-              </p>
-              <p>
-                <strong className="text-amber-300">Passing & Kicking:</strong>{' '}
-                Pass Player lets you move through occupied spaces and jump ahead
-                of a rival. No Passing forces you to stop behind the first camel
-                in your way. Kick Player lets you push an adjacent rival back 3
-                spaces or stun them for 1 turn.
-              </p>
-              <p>
-                <strong className="text-amber-300">Desert Events:</strong> After
-                every full round, the Event Die rolls Sandstorm (-2 all),
-                Tailwind (+1 all), Mirage (ignore next obstacle), or Water Stop
-                (all gain Shield).
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
 
-      {/* Collapsible Bottom Control Dock (Zero Viewport Occlusion) */}
+      {/* Collapsible Bottom Control Dock */}
       <div className="flex flex-col items-center w-full">
         <button
           type="button"
@@ -620,9 +609,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </button>
 
         {!dockHidden && (
-          <div className="pointer-events-auto w-full max-w-4xl rounded-2xl bg-stone-950/92 border border-stone-800 px-4 py-3 shadow-2xl">
-            <div className="flex flex-col md:flex-row items-center justify-between gap-3">
-              {/* Left: Active Camel Identity & Status */}
+          <div className="pointer-events-auto w-full max-w-5xl rounded-2xl bg-stone-950/92 border border-stone-800 px-4 py-3 shadow-2xl">
+            <div className="flex flex-col lg:flex-row items-center justify-between gap-3">
+              {/* Left: Active Camel Identity, Checkpoint & Stamina */}
               {currentPlayer && (
                 <div className="flex items-center gap-3 min-w-0">
                   <span
@@ -636,53 +625,88 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                       <span className="font-display font-bold text-sm text-white truncate">
                         {currentPlayer.name}
                       </span>
-                      <span className="text-xs text-stone-400 whitespace-nowrap">
+                      <span className="text-xs text-stone-400 whitespace-nowrap tabular-nums">
                         {currentPlayer.isAI ? 'Bot' : 'Local'} · Tile{' '}
-                        {currentPlayer.position}/{state.trackLength}
+                        {currentPlayer.position}/{state.trackLength} · CP{' '}
+                        {currentPlayer.checkpoint}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-amber-300 mt-0.5">
-                      {currentPlayer.hasShield && <span>Shielded</span>}
-                      {currentPlayer.mirageShield && <span>Mirage</span>}
-                      {currentPlayer.sprintActive && <span>2x Sprint</span>}
-                      {currentPlayer.speedBoostQueued && <span>+4 Boost</span>}
-                      {state.extraTurnQueued && <span>Bonus Turn</span>}
-                      {!currentPlayer.hasShield &&
-                        !currentPlayer.mirageShield &&
-                        !currentPlayer.sprintActive &&
-                        !currentPlayer.speedBoostQueued && (
-                          <span className="text-stone-400">
-                            {state.bannerText}
-                          </span>
+
+                    {/* Stamina Pips & Pre-Roll +1 Boost */}
+                    <div className="flex items-center gap-2 text-xs mt-1">
+                      <div className="flex items-center gap-1 text-amber-300">
+                        <BatteryCharging className="w-3.5 h-3.5" />
+                        <span className="text-stone-400">Stamina</span>
+                        <div className="flex items-center gap-1 ml-0.5">
+                          {[0, 1, 2].map((idx) => (
+                            <span
+                              key={idx}
+                              className={`w-2.5 h-2.5 rounded-sm border ${
+                                idx < currentPlayer.stamina
+                                  ? 'bg-amber-400 border-amber-300'
+                                  : 'bg-stone-800 border-stone-700'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      {isHumanRollReady &&
+                        currentPlayer.stamina > 0 &&
+                        !currentPlayer.staminaMoveBoostQueued && (
+                          <button
+                            type="button"
+                            onClick={onSpendStaminaPlusOne}
+                            className="px-2 py-0.5 rounded-md bg-amber-500/20 hover:bg-amber-500/35 border border-amber-400/60 text-amber-200 font-semibold text-[11px] cursor-pointer whitespace-nowrap"
+                          >
+                            +1 Move (1 Stamina)
+                          </button>
                         )}
+
+                      {currentPlayer.staminaMoveBoostQueued && (
+                        <span className="text-[11px] font-semibold text-emerald-300">
+                          +1 Stamina Ready
+                        </span>
+                      )}
+                      {currentPlayer.hasShield && (
+                        <span className="text-[11px] font-semibold text-sky-300">
+                          Shielded
+                        </span>
+                      )}
+                      {currentPlayer.sprintActive && (
+                        <span className="text-[11px] font-semibold text-emerald-300">
+                          2x Sprint
+                        </span>
+                      )}
+                      {currentPlayer.speedBoostQueued && (
+                        <span className="text-[11px] font-semibold text-orange-300">
+                          {isInFinalSprintZone(
+                            currentPlayer.position,
+                            state.trackLength
+                          )
+                            ? '+6 Boost'
+                            : '+4 Boost'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Center: Dice Result Readout + Roll Action */}
+              {/* Center: Visual 3D Dice + Roll Action */}
               <div className="flex items-center gap-3 shrink-0">
                 {state.lastRoll && (
-                  <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-stone-900 border border-stone-800 text-xs">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-stone-400">Move</span>
-                      <span className="font-mono font-bold text-base text-amber-300 tabular-nums">
-                        {state.lastRoll.movementDie}
-                      </span>
-                    </div>
-                    <span className="text-stone-700">|</span>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-stone-400">Action</span>
-                      <span className="font-semibold text-white whitespace-nowrap">
-                        {ACTION_DIE_FACES[state.lastRoll.actionDieNumber]?.label}
-                      </span>
-                    </div>
-                  </div>
+                  <VisualDice
+                    movementDie={state.lastRoll.movementDie}
+                    actionDieNumber={state.lastRoll.actionDieNumber}
+                    actionDie={state.lastRoll.actionDie}
+                    rollNonce={state.lastRoll.rollNonce}
+                  />
                 )}
 
                 <button
                   type="button"
-                  disabled={!isHumanTurn}
+                  disabled={!isHumanRollReady}
                   onClick={onRollDice}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-display font-bold text-sm bg-amber-400 hover:bg-amber-300 text-stone-950 shadow-md transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -692,7 +716,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                       ? 'Bot Thinking…'
                       : state.phase === 'awaiting_roll'
                       ? 'Roll Dice (Space)'
-                      : 'Resolving…'}
+                      : 'Moving…'}
                   </span>
                 </button>
               </div>
@@ -768,18 +792,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                       p.finishedRank === null &&
                       p.position === tile.index
                   );
-                  const isTrap = Boolean(tile.sandTrapOwnerId);
-                  let effectText = 'Safe';
+                  let effectText = isInFinalSprintZone(
+                    tile.index,
+                    state.trackLength
+                  )
+                    ? 'Final Sprint'
+                    : 'Safe';
                   let toneClass =
                     'bg-stone-900/80 border-stone-800 text-stone-300';
                   if (tile.spaceType === 'finish') {
                     effectText = 'Finish Line';
                     toneClass =
                       'bg-emerald-500/15 border-emerald-500/50 text-emerald-300';
-                  } else if (isTrap) {
-                    effectText = 'Sand Trap';
+                  } else if (tile.hazardKind === 'sand_wall') {
+                    effectText = 'Sand Wall';
+                    toneClass =
+                      'bg-amber-500/20 border-amber-500/60 text-amber-200';
+                  } else if (tile.hazardKind === 'quicksand') {
+                    effectText = 'Quicksand';
                     toneClass =
                       'bg-red-500/20 border-red-500/60 text-red-200';
+                  } else if (tile.spaceType === 'checkpoint') {
+                    effectText = 'Checkpoint';
+                    toneClass =
+                      'bg-blue-500/15 border-blue-500/50 text-blue-300';
                   } else if (tile.spaceType === 'obstacle') {
                     effectText =
                       tile.obstacleProp === 'bandit'
@@ -823,38 +859,40 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
             )}
 
-            {/* Active Player Power-Ups Strip (only when active human player holds tokens) */}
-            {currentPlayer && !currentPlayer.isAI && currentPlayer.powerUps.length > 0 && (
-              <div className="mt-2.5 pt-2.5 border-t border-stone-800/80 flex items-center gap-2 overflow-x-auto">
-                <span className="text-xs text-stone-400 flex items-center gap-1 shrink-0">
-                  <Sparkles className="w-3.5 h-3.5 text-teal-400" />
-                  <span>Power-Ups:</span>
-                </span>
-                {currentPlayer.powerUps.map((pu, idx) => {
-                  const meta = POWER_UP_META[pu];
-                  return (
-                    <button
-                      key={`${pu}-${idx}`}
-                      type="button"
-                      disabled={state.phase !== 'awaiting_roll'}
-                      onClick={() => onUsePowerUp(pu)}
-                      title={meta.shortDesc}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 hover:bg-stone-800 border border-stone-700 text-xs font-medium text-white cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
-                    >
-                      <Zap
-                        className="w-3.5 h-3.5"
-                        style={{ color: meta.accentColor }}
-                      />
-                      <span>{meta.name}</span>
-                    </button>
-                  );
-                })}
-                <span className="text-[11px] text-stone-500 ml-auto hidden lg:inline whitespace-nowrap">
-                  <Eye className="w-3 h-3 inline mr-1" />
-                  Drag to orbit · Scroll to zoom
-                </span>
-              </div>
-            )}
+            {/* Active Player Power-Ups Strip */}
+            {currentPlayer &&
+              !currentPlayer.isAI &&
+              currentPlayer.powerUps.length > 0 && (
+                <div className="mt-2.5 pt-2.5 border-t border-stone-800/80 flex items-center gap-2 overflow-x-auto">
+                  <span className="text-xs text-stone-400 flex items-center gap-1 shrink-0">
+                    <Sparkles className="w-3.5 h-3.5 text-teal-400" />
+                    <span>Power-Ups:</span>
+                  </span>
+                  {currentPlayer.powerUps.map((pu, idx) => {
+                    const meta = POWER_UP_META[pu];
+                    return (
+                      <button
+                        key={`${pu}-${idx}`}
+                        type="button"
+                        disabled={state.phase !== 'awaiting_roll'}
+                        onClick={() => onUsePowerUp(pu)}
+                        title={meta.shortDesc}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 hover:bg-stone-800 border border-stone-700 text-xs font-medium text-white cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
+                      >
+                        <Zap
+                          className="w-3.5 h-3.5"
+                          style={{ color: meta.accentColor }}
+                        />
+                        <span>{meta.name}</span>
+                      </button>
+                    );
+                  })}
+                  <span className="text-[11px] text-stone-500 ml-auto hidden lg:inline whitespace-nowrap">
+                    <Eye className="w-3 h-3 inline mr-1" />
+                    Drag to orbit · Scroll to zoom
+                  </span>
+                </div>
+              )}
           </div>
         )}
       </div>

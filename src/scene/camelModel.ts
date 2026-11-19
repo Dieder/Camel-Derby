@@ -15,6 +15,7 @@ export interface CamelRig {
   dizzyGroup: THREE.Group;
   eyebrows: [THREE.Mesh, THREE.Mesh];
   pupils: [THREE.Mesh, THREE.Mesh];
+  lanternPivot: THREE.Group;
   setStatus: (opts: {
     hasShield: boolean;
     speedActive: boolean;
@@ -22,7 +23,13 @@ export interface CamelRig {
     stunned: boolean;
     isMoving: boolean;
   }) => void;
-  animate: (elapsed: number, isMoving: boolean, isStunned: boolean) => void;
+  setNightMode: (isNight: boolean) => void;
+  animate: (
+    elapsed: number,
+    isMoving: boolean,
+    isStunned: boolean,
+    isCelebrating?: boolean
+  ) => void;
   dispose: () => void;
 }
 
@@ -161,6 +168,48 @@ export function createCamelModel(color: CamelColor): CamelRig {
   saddleMesh.position.set(0, 0.84, -0.02);
   saddleMesh.castShadow = true;
   bodyPivot.add(saddleMesh);
+
+  // 5b. Right-Back Mounted Desert Lantern / Lamp (glows warmly in Dark mode)
+  const brassMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xd97706,
+      roughness: 0.28,
+      metalness: 0.82,
+    })
+  );
+  const lampGlassMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      emissive: 0xffa726,
+      emissiveIntensity: 0.25,
+      roughness: 0.15,
+    })
+  );
+  const bracketGeo = track(new THREE.BoxGeometry(0.18, 0.05, 0.05));
+  const lanternCapGeo = track(new THREE.ConeGeometry(0.11, 0.1, 6));
+  const lanternGlassGeo = track(new THREE.CylinderGeometry(0.075, 0.065, 0.16, 8));
+  const lanternBaseGeo = track(new THREE.CylinderGeometry(0.085, 0.09, 0.04, 8));
+
+  const lanternArm = new THREE.Mesh(bracketGeo, brassMat);
+  lanternArm.position.set(-0.34, 0.94, -0.24);
+  lanternArm.rotation.z = 0.25;
+  bodyPivot.add(lanternArm);
+
+  const lanternPivot = new THREE.Group();
+  lanternPivot.position.set(-0.42, 0.9, -0.24);
+  bodyPivot.add(lanternPivot);
+
+  const lanternCap = new THREE.Mesh(lanternCapGeo, brassMat);
+  lanternCap.position.y = -0.04;
+  lanternPivot.add(lanternCap);
+
+  const lanternGlass = new THREE.Mesh(lanternGlassGeo, lampGlassMat);
+  lanternGlass.position.y = -0.15;
+  lanternPivot.add(lanternGlass);
+
+  const lanternBase = new THREE.Mesh(lanternBaseGeo, brassMat);
+  lanternBase.position.y = -0.24;
+  lanternPivot.add(lanternBase);
 
   // 6. Tail with playful tuft
   const tail = new THREE.Group();
@@ -342,6 +391,10 @@ export function createCamelModel(color: CamelColor): CamelRig {
     dizzyGroup,
     eyebrows: [browL, browR],
     pupils: [pupilL, pupilR],
+    lanternPivot,
+    setNightMode(isNight) {
+      lampGlassMat.emissiveIntensity = isNight ? 2.6 : 0.25;
+    },
     setStatus({ hasShield, speedActive, blockaded, stunned, isMoving }) {
       shieldDome.visible = hasShield;
       speedRing.visible = speedActive;
@@ -366,35 +419,61 @@ export function createCamelModel(color: CamelColor): CamelRig {
         pupilR.position.y = 0.09;
       }
     },
-    animate(elapsed, isMoving, isStunned) {
+    animate(elapsed, isMoving, isStunned, isCelebrating = false) {
       const t = elapsed + seed;
-      if (isMoving) {
+      if (isCelebrating) {
+        // 3D Victory Dance & Joyful Jumps!
+        const jump = Math.abs(Math.sin(t * 6.5));
+        bodyPivot.position.y = 0.14 + jump * 0.95;
+        bodyPivot.rotation.y = Math.sin(t * 3.2) * 0.65;
+        bodyPivot.rotation.x = Math.sin(t * 6.5) * 0.18;
+        bodyPivot.rotation.z = Math.cos(t * 4.5) * 0.16;
+        headGroup.rotation.x = -0.25 + Math.sin(t * 10) * 0.25;
+        headGroup.rotation.y = Math.sin(t * 5) * 0.35;
+        headGroup.rotation.z = Math.sin(t * 8) * 0.2;
+        legs[0].rotation.x = -0.55 - jump * 0.55;
+        legs[1].rotation.x = -0.55 - jump * 0.55;
+        legs[2].rotation.x = 0.45 * Math.sin(t * 6.5);
+        legs[3].rotation.x = -0.45 * Math.sin(t * 6.5);
+        tail.rotation.z = Math.sin(t * 16) * 0.45;
+        lanternPivot.rotation.z = Math.sin(t * 8) * 0.24;
+      } else if (isMoving) {
         // Energetic cartoon camel gallop!
-        bodyPivot.position.y = 0.14 + Math.abs(Math.sin(t * 14)) * 0.14;
-        bodyPivot.rotation.x = Math.sin(t * 14) * 0.12;
-        headGroup.rotation.x = Math.sin(t * 14 + 0.6) * 0.16;
-        headGroup.rotation.z = Math.cos(t * 7) * 0.08;
-        legs[0].rotation.x = Math.sin(t * 14) * 0.65;
-        legs[1].rotation.x = -Math.sin(t * 14) * 0.65;
-        legs[2].rotation.x = -Math.sin(t * 14) * 0.65;
-        legs[3].rotation.x = Math.sin(t * 14) * 0.65;
-        tail.rotation.z = Math.sin(t * 12) * 0.3;
+        bodyPivot.position.y = 0.14 + Math.abs(Math.sin(t * 10)) * 0.14;
+        bodyPivot.rotation.y = 0;
+        bodyPivot.rotation.x = Math.sin(t * 10) * 0.11;
+        bodyPivot.rotation.z = 0;
+        headGroup.rotation.x = Math.sin(t * 10 + 0.6) * 0.15;
+        headGroup.rotation.y = 0;
+        headGroup.rotation.z = Math.cos(t * 5) * 0.08;
+        legs[0].rotation.x = Math.sin(t * 10) * 0.6;
+        legs[1].rotation.x = -Math.sin(t * 10) * 0.6;
+        legs[2].rotation.x = -Math.sin(t * 10) * 0.6;
+        legs[3].rotation.x = Math.sin(t * 10) * 0.6;
+        tail.rotation.z = Math.sin(t * 9) * 0.28;
+        lanternPivot.rotation.z = Math.sin(t * 10) * 0.16;
       } else if (isStunned) {
         bodyPivot.position.y = 0.14;
+        bodyPivot.rotation.y = 0;
         bodyPivot.rotation.x = 0.08;
+        bodyPivot.rotation.z = 0;
         headGroup.rotation.z = Math.sin(t * 5) * 0.22;
         headGroup.rotation.x = 0.15;
         dizzyGroup.rotation.y = t * 4.5;
         legs.forEach((l) => (l.rotation.x = 0));
+        lanternPivot.rotation.z = Math.sin(t * 3) * 0.05;
       } else {
         // Quirky idle breathing + curious head look
         bodyPivot.position.y = 0.14 + Math.sin(t * 2.5) * 0.025;
+        bodyPivot.rotation.y = 0;
         bodyPivot.rotation.x = 0;
+        bodyPivot.rotation.z = 0;
         headGroup.rotation.y = Math.sin(t * 1.4) * 0.2;
         headGroup.rotation.x = Math.sin(t * 2.5) * 0.05;
         headGroup.rotation.z = 0;
         legs.forEach((l) => (l.rotation.x = 0));
         tail.rotation.z = Math.sin(t * 3.5) * 0.18;
+        lanternPivot.rotation.z = Math.sin(t * 2.2) * 0.06;
       }
 
       if (speedRing.visible) {

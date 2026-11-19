@@ -13,10 +13,13 @@ import {
   createInitialGameState,
   dismissEventAndPrepareTurn,
   executeKick,
+  getChampionshipStandings,
+  isInFinalSprintZone,
   moveCamelStackTo,
   pickAIPreRollPowerUp,
   resolveObstacleEffect,
   rollD6,
+  spendStaminaForPlusOne,
   startNextRaceInChampionship,
   usePowerUpPreRoll,
 } from './game/engine';
@@ -73,6 +76,7 @@ export default function App() {
     detail: string;
   } | null>(null);
   const rollMsgTimerRef = useRef<number | null>(null);
+  const rollNonceRef = useRef<number>(1);
 
   const showRollMessage = useCallback(
     (
@@ -80,7 +84,7 @@ export default function App() {
       playerColor: GameState['players'][0]['color'],
       headline: string,
       detail: string,
-      durationMs = 4200
+      durationMs = 4600
     ) => {
       if (rollMsgTimerRef.current !== null) {
         window.clearTimeout(rollMsgTimerRef.current);
@@ -119,14 +123,14 @@ export default function App() {
     const handle = mountBoardScene(el, {
       onTileClick: (tileIdx) => {
         const cur = stateRef.current;
-        if (cur.phase !== 'sand_trap_target') return;
+        if (cur.phase !== 'sand_wall_target') return;
         const active = cur.players[cur.currentPlayerIndex];
         if (!active) return;
         sound.playPowerUp();
         const next = usePowerUpPreRoll(
           cur,
           active.id,
-          'sand_trap',
+          'sand_wall',
           undefined,
           tileIdx
         );
@@ -149,7 +153,7 @@ export default function App() {
     };
   }, [clearAllTimers]);
 
-  // Keep 3D Camels & Sand Traps synced whenever gameState updates
+  // Keep 3D Camels & Hazards synced whenever gameState updates
   useEffect(() => {
     const handle = sceneRef.current;
     if (!handle) return;
@@ -159,7 +163,7 @@ export default function App() {
         : gameState.players[gameState.currentPlayerIndex]?.id ?? null;
     handle.syncPlayers(gameState.players, activeId);
     handle.syncSandTraps(gameState.tiles);
-    handle.setTileSelectionMode(gameState.phase === 'sand_trap_target');
+    handle.setTileSelectionMode(gameState.phase === 'sand_wall_target');
   }, [gameState]);
 
   // Day/Sunset/Night automatic progression per round (unless user manually chose a time)
@@ -171,7 +175,7 @@ export default function App() {
     sceneRef.current?.setTimeOfDay(nextTod);
   }, [gameState.round, gameState.phase, manualTimeLock]);
 
-  // Trigger sandstorm burst visual on sandstorm event
+  // Trigger sandstorm burst visual, event sound, or 3D Winner Celebration + Confetti
   useEffect(() => {
     if (
       gameState.phase === 'event_banner' &&
@@ -189,94 +193,61 @@ export default function App() {
       gameState.phase === 'match_over'
     ) {
       sound.playFanfare();
+      const winnerId =
+        gameState.phase === 'match_over'
+          ? getChampionshipStandings(gameState.players)[0]?.id ??
+            gameState.raceFinishOrder[0]
+          : gameState.raceFinishOrder[0];
+      sceneRef.current?.setVictoryCelebration(winnerId ?? null);
+    } else {
+      sceneRef.current?.setVictoryCelebration(null);
     }
-  }, [gameState.phase, gameState.pendingEvent]);
+  }, [
+    gameState.phase,
+    gameState.pendingEvent,
+    gameState.players,
+    gameState.raceFinishOrder,
+  ]);
 
-  // Keyboard shortcuts: 'H' for Hide/Show Controls, 'Space' to Roll Dice for active human player
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
-        return;
-      }
-      if (e.key === 'h' || e.key === 'H') {
-        setDockHidden((prev) => !prev);
-        return;
-      }
-      if (e.code === 'Space' || e.key === ' ') {
-        const cur = stateRef.current;
-        const active = cur.players[cur.currentPlayerIndex];
-        if (cur.phase === 'awaiting_roll' && active && !active.isAI) {
-          e.preventDefault();
-          executeRollTurnRef.current?.(cur);
-        }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Slow, readable hop-by-hop movement runner after dice are confirmed
+  const commitRollMovement = useCallback(
+    (rolledState: GameState) => {
+      const mover = rolledState.players[rolledState.currentPlayerIndex];
+      const lastRoll = rolledState.lastRoll;
+      if (!mover || !lastRoll) return;
 
-  const executeRollTurnRef = useRef<((s: GameState) => void) | null>(null);
+      const actionMeta = ACTION_DIE_FACES[lastRoll.actionDieNumber];
+      const actionFace = lastRoll.actionDie;
+      const rollHeadline = `Rolled ${lastRoll.movementDie}${
+        lastRoll.sprintUsed ? ' ×2' : ''
+      }${lastRoll.speedBoostUsed ? ` +${isInFinalSprintZone(mover.position, rolledState.trackLength) ? 6 : 4}` : ''}${
+        lastRoll.staminaBoostUsed ? ' +1' : ''
+      } (${lastRoll.totalSteps} steps) · ${actionMeta.label}`;
 
-  // Hop-by-hop movement runner
-  const executeRollTurn = useCallback(
-    (startingState: GameState) => {
-      const mover = startingState.players[startingState.currentPlayerIndex];
-      if (!mover) return;
-
-      sound.playDiceRoll();
-
-      // Automatically switch camera to Follow view after rolling dice!
-      setCameraMode('follow');
-      sceneRef.current?.setCameraMode('follow');
-
-      const movementDie = rollD6();
-      const actionDieNumber = rollD6();
-      const actionMeta = ACTION_DIE_FACES[actionDieNumber];
-      const actionFace = actionMeta.face;
-
-      const sprintUsed = mover.sprintActive;
-      const speedBoostUsed = mover.speedBoostQueued;
-      const totalSteps =
-        movementDie * (sprintUsed ? 2 : 1) + (speedBoostUsed ? 4 : 0);
-
-      const rollHeadline = `Rolled ${movementDie}${
-        sprintUsed ? ' ×2' : ''
-      }${speedBoostUsed ? ' +4' : ''} (${totalSteps} steps) · ${actionMeta.label}`;
-      showRollMessage(mover.name, mover.color, rollHeadline, actionMeta.desc);
-
-      // Update player flags immediately & show rolling state
-      const preparedPlayers = startingState.players.map((p) =>
+      // Consume queued pre-roll boosts upon committing movement
+      const preparedPlayers = rolledState.players.map((p) =>
         p.id === mover.id
-          ? { ...p, sprintActive: false, speedBoostQueued: false }
+          ? {
+              ...p,
+              sprintActive: false,
+              speedBoostQueued: false,
+              staminaMoveBoostQueued: false,
+            }
           : { ...p }
       );
       const preparedMover = preparedPlayers.find((p) => p.id === mover.id)!;
 
-      const rollingState: GameState = {
-        ...startingState,
+      const movingState: GameState = {
+        ...rolledState,
         players: preparedPlayers,
         phase: 'animating_move',
-        lastRoll: {
-          movementDie,
-          actionDie: actionFace,
-          actionDieNumber,
-          totalSteps,
-          sprintUsed,
-          speedBoostUsed,
-        },
-        bannerText: `${mover.name} rolled ${movementDie}${
-          sprintUsed ? ' ×2' : ''
-        }${speedBoostUsed ? ' +4' : ''} · ${actionMeta.label}`,
       };
-      setGameState(rollingState);
+      setGameState(movingState);
 
       const plan = computeMovementPlan(
-        rollingState,
+        movingState,
         preparedMover,
-        totalSteps,
+        lastRoll.totalSteps,
         actionFace
       );
 
@@ -340,7 +311,6 @@ export default function App() {
 
       const runHop = (hopIdx: number, cur: GameState) => {
         if (hopIdx > totalHops) {
-          // Finished hopping to plan.dest
           if (plan.canOfferPassChoice) {
             if (!mover.isAI) {
               setGameState({
@@ -357,7 +327,6 @@ export default function App() {
               });
               return;
             } else {
-              // AI chooses to vault ahead if vaultDest is further
               finalizeAtDest(
                 cur,
                 plan.vaultDest,
@@ -376,7 +345,6 @@ export default function App() {
             return;
           }
 
-          // Already at plan.dest from final hop, now run post-move resolution
           const existingMover = cur.players.find((p) => p.id === mover.id)!;
           const stackedBelow = cur.players.find(
             (p) =>
@@ -419,7 +387,6 @@ export default function App() {
           return;
         }
 
-        // Single hop forward
         const nextPlayers = cur.players.map((p) => ({ ...p }));
         const nextFinish = [...cur.raceFinishOrder];
         moveCamelStackTo(
@@ -437,27 +404,119 @@ export default function App() {
         };
         setGameState(hoppedState);
 
-        scheduleTimer(() => runHop(hopIdx + 1, hoppedState), 175);
+        // Slower, clearly readable camel step cadence (420ms per hop)
+        scheduleTimer(() => runHop(hopIdx + 1, hoppedState), 420);
       };
 
       if (totalHops === 0) {
         scheduleTimer(() => {
           finalizeAtDest(
-            rollingState,
+            movingState,
             startPos,
             plan.stoppedBehindName
               ? `No Passing! ${mover.name} remained stuck behind ${plan.stoppedBehindName}.`
               : undefined
           );
-        }, 320);
+        }, 420);
       } else {
-        scheduleTimer(() => runHop(1, rollingState), 280);
+        scheduleTimer(() => runHop(1, movingState), 340);
       }
     },
     [scheduleTimer, showRollMessage]
   );
 
-  executeRollTurnRef.current = executeRollTurn;
+  // Roll dice and immediately move after brief dice-tumble beat (no reroll pause)
+  const rollDiceForActive = useCallback(
+    (startingState: GameState) => {
+      const mover = startingState.players[startingState.currentPlayerIndex];
+      if (!mover) return;
+
+      sound.playDiceRoll();
+
+      setCameraMode('follow');
+      sceneRef.current?.setCameraMode('follow');
+
+      const movementDie = rollD6();
+      const actionDieNumber = rollD6();
+      const actionMeta = ACTION_DIE_FACES[actionDieNumber];
+      const actionFace = actionMeta.face;
+
+      const sprintUsed = mover.sprintActive;
+      const speedBoostUsed = mover.speedBoostQueued;
+      const staminaBoostUsed = mover.staminaMoveBoostQueued;
+      const speedBonus = isInFinalSprintZone(
+        mover.position,
+        startingState.trackLength
+      )
+        ? 6
+        : 4;
+      const totalSteps =
+        movementDie * (sprintUsed ? 2 : 1) +
+        (speedBoostUsed ? speedBonus : 0) +
+        (staminaBoostUsed ? 1 : 0);
+
+      const rollNonce = ++rollNonceRef.current;
+
+      const rollHeadline = `Rolled ${movementDie}${
+        sprintUsed ? ' ×2' : ''
+      }${speedBoostUsed ? ` +${speedBonus}` : ''}${
+        staminaBoostUsed ? ' +1' : ''
+      } (${totalSteps} steps) · ${actionMeta.label}`;
+      showRollMessage(mover.name, mover.color, rollHeadline, actionMeta.desc);
+
+      const rolledState: GameState = {
+        ...startingState,
+        phase: 'animating_move',
+        lastRoll: {
+          movementDie,
+          actionDie: actionFace,
+          actionDieNumber,
+          totalSteps,
+          sprintUsed,
+          speedBoostUsed,
+          staminaBoostUsed,
+          rollNonce,
+        },
+        bannerText: `${mover.name} rolled ${totalSteps} · ${actionMeta.label}`,
+      };
+      setGameState(rolledState);
+
+      scheduleTimer(() => {
+        commitRollMovement(rolledState);
+      }, 480);
+    },
+    [commitRollMovement, scheduleTimer, showRollMessage]
+  );
+
+  const rollDiceRef = useRef(rollDiceForActive);
+  rollDiceRef.current = rollDiceForActive;
+
+  // Keyboard shortcuts: 'H' for Hide/Show Controls, 'Space' to Roll Dice for active human player
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      if (e.key === 'h' || e.key === 'H') {
+        setDockHidden((prev) => !prev);
+        return;
+      }
+      if (e.code === 'Space' || e.key === ' ') {
+        const cur = stateRef.current;
+        const active = cur.players[cur.currentPlayerIndex];
+        if (!active || active.isAI) return;
+        if (cur.phase === 'awaiting_roll') {
+          e.preventDefault();
+          rollDiceRef.current(cur);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Automatic AI Turn Pacing
   useEffect(() => {
@@ -472,12 +531,11 @@ export default function App() {
           if (!aiNow || !aiNow.isAI) return;
           const afterPowerUps = pickAIPreRollPowerUp(latest, aiNow);
           setGameState(afterPowerUps);
-          scheduleTimer(() => executeRollTurn(afterPowerUps), 350);
-        }, 650);
+          scheduleTimer(() => rollDiceForActive(afterPowerUps), 380);
+        }, 700);
         return () => window.clearTimeout(t);
       }
     } else if (cur.phase === 'event_banner') {
-      // If all players are AI or user wants smooth flow, let human click or auto-dismiss only when no humans exist
       const hasHuman = cur.players.some((p) => !p.isAI);
       if (!hasHuman) {
         const t = window.setTimeout(() => {
@@ -486,7 +544,7 @@ export default function App() {
         return () => window.clearTimeout(t);
       }
     }
-  }, [gameState.phase, gameState.currentPlayerIndex, executeRollTurn, scheduleTimer]);
+  }, [gameState.phase, gameState.currentPlayerIndex, rollDiceForActive, scheduleTimer]);
 
   // Handlers
   const handleStartDerby = () => {
@@ -495,6 +553,7 @@ export default function App() {
     setGameState(fresh);
     setManualTimeLock(false);
     setTimeOfDay('day');
+    sceneRef.current?.setVictoryCelebration(null);
     sceneRef.current?.setTimeOfDay('day');
     sceneRef.current?.syncBoard(fresh.tiles);
     sceneRef.current?.syncPlayers(fresh.players, fresh.players[0]?.id ?? null);
@@ -507,6 +566,7 @@ export default function App() {
     const preview = createInitialGameState(lobbyMode, lobbyFormat, playerConfigs);
     preview.phase = 'lobby';
     setGameState(preview);
+    sceneRef.current?.setVictoryCelebration(null);
     sceneRef.current?.syncBoard(preview.tiles);
     sceneRef.current?.syncPlayers(preview.players, null);
     sceneRef.current?.setCameraMode('overview');
@@ -517,21 +577,38 @@ export default function App() {
     const active = cur.players[cur.currentPlayerIndex];
     if (!active || cur.phase !== 'awaiting_roll') return;
 
-    if (pu === 'sand_trap') {
+    if (pu === 'sand_wall') {
       setGameState({
         ...cur,
-        phase: 'sand_trap_target',
-        bannerText: 'Click any board tile to place your Sand Trap!',
+        phase: 'sand_wall_target',
+        bannerText: 'Click any board tile to place your Sand Wall!',
       });
       return;
     }
-    if (pu === 'blockade') {
+    if (pu === 'block') {
       setGameState({
         ...cur,
-        phase: 'blockade_target',
-        bannerText: 'Choose a rival camel to Blockade for 2 turns.',
+        phase: 'block_target',
+        bannerText: 'Choose a rival camel to Block for 2 turns.',
       });
       return;
+    }
+    if (pu === 'swap') {
+      const ahead = cur.players.some(
+        (p) =>
+          p.id !== active.id &&
+          p.finishedRank === null &&
+          p.position > active.position
+      );
+      if (!ahead) {
+        showRollMessage(
+          active.name,
+          active.color,
+          'Swap Unavailable',
+          'You are already ahead — no rival in front to swap with!'
+        );
+        return;
+      }
     }
     sound.playPowerUp();
     setGameState(usePowerUpPreRoll(cur, active.id, pu));
@@ -595,8 +672,11 @@ export default function App() {
     clearAllTimers();
     const next = startNextRaceInChampionship(stateRef.current);
     setGameState(next);
+    sceneRef.current?.setVictoryCelebration(null);
     sceneRef.current?.syncBoard(next.tiles);
     sceneRef.current?.syncPlayers(next.players, next.players[0]?.id ?? null);
+    sceneRef.current?.setCameraMode('overview');
+    setCameraMode('overview');
   };
 
   return (
@@ -668,17 +748,24 @@ export default function App() {
             sound.muted = !muted;
             setMuted(!muted);
           }}
-          onRollDice={() => executeRollTurn(stateRef.current)}
+          onRollDice={() => rollDiceForActive(stateRef.current)}
+          onSpendStaminaPlusOne={() => {
+            const cur = stateRef.current;
+            const active = cur.players[cur.currentPlayerIndex];
+            if (!active || cur.phase !== 'awaiting_roll') return;
+            sound.playPowerUp();
+            setGameState(spendStaminaForPlusOne(cur, active.id));
+          }}
           onUsePowerUp={handleUsePowerUp}
           onResolvePassChoice={handleResolvePassChoice}
           onResolveKick={handleResolveKick}
-          onSelectBlockadeTarget={(targetId) => {
+          onSelectBlockTarget={(targetId) => {
             const cur = stateRef.current;
             const active = cur.players[cur.currentPlayerIndex];
             if (!active) return;
             sound.playKick();
             setGameState(
-              usePowerUpPreRoll(cur, active.id, 'blockade', targetId)
+              usePowerUpPreRoll(cur, active.id, 'block', targetId)
             );
           }}
           onCancelTargetMode={() => {
